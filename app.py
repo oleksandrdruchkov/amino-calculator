@@ -1,8 +1,9 @@
+import re
 import streamlit as st
 import libsql_client
 import pandas as pd
 
-# Конфігурація сторінки
+# 1. Page Configuration
 st.set_page_config(
     page_title="AminoCalc",
     page_icon="🥗",
@@ -10,7 +11,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Адаптивний CSS під мобільні екрани
+# Responsive mobile styles
 st.markdown("""
 <style>
     @media (max-width: 768px) {
@@ -28,7 +29,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Еталонні профілі ВООЗ/ФАО 2007 (мг на 1 г білка)
+# WHO/FAO/UNU 2007 Reference Pattern for Adults (mg/g protein)
 WHO_REFERENCE = {
     "Histidine": 15.0,
     "Isoleucine": 30.0,
@@ -41,7 +42,7 @@ WHO_REFERENCE = {
     "Valine": 39.0
 }
 
-# Добова потреба на 1 кг маси тіла (мг/кг/день)
+# WHO Daily Requirement per kg body weight (mg/kg/day)
 WHO_DAILY_REQ_PER_KG = {
     "Histidine": 10.0,
     "Isoleucine": 20.0,
@@ -54,7 +55,7 @@ WHO_DAILY_REQ_PER_KG = {
     "Valine": 26.0
 }
 
-# Орієнтовні добові норми мікронутрієнтів для дорослих (RDA / DV)
+# Daily Values / RDA for Micronutrients
 DAILY_VALUES = {
     "calcium": 1000.0,      # mg
     "iron": 14.0,           # mg
@@ -91,7 +92,7 @@ client = get_db()
 st.title("🥗 AminoCalc")
 st.caption("Protein Quality, Amino Acid Score & Complete Micronutrient Profiler (WHO/FAO 2007)")
 
-# Налаштування профілю
+# User Profile Settings
 with st.expander("⚙️ Your Profile & Targets", expanded=False):
     col_w, col_p = st.columns(2)
     with col_w:
@@ -105,54 +106,66 @@ with st.expander("⚙️ Your Profile & Targets", expanded=False):
 if "cart" not in st.session_state:
     st.session_state.cart = []
 
-# 1. Пошук продуктів із мультислівним зіставленням та зваженою релевантністю
+# 1. Search & Add Food (Word-boundary filtered & token ranked)
 st.subheader("1. Search & Add Food")
 search_term = st.text_input(
-    "Search food item (e.g., salmon, bread, egg, oats, chickpeas, chicken breast):",
+    "Search food item (e.g., bread, salmon, egg, oats, chickpeas, chicken breast):",
     placeholder="Type food name..."
 )
 
 if search_term:
-    # Розбиваємо запит на окремі пошукові слова, очищуючи від пунктуації
-    raw_words = [w.strip(",. ") for w in search_term.strip().lower().split()]
-    words = [w for w in raw_words if len(w) > 0]
+    raw_tokens = [w.strip(",. ") for w in search_term.strip().lower().split()]
+    tokens = [w for w in raw_tokens if len(w) > 0]
     
-    if words:
-        first_word = words[0]
-        # Кожне слово має зустрічатися в назві (незалежно від порядку та розділових знаків)
-        where_conditions = " AND ".join(["LOWER(name) LIKE ?" for _ in words])
+    if tokens:
+        where_conditions = " AND ".join(["LOWER(name) LIKE ?" for _ in tokens])
+        query = f"SELECT * FROM foods WHERE {where_conditions}"
+        params = [f"%{t}%" for t in tokens]
         
-        # Розрахунок ранжування:
-        # Пріоритет 1: перше слово стоїть на початку або одразу після коми категорії USDA ("Fish, salmon...")
-        # Пріоритет 2: точний збіг слова як окремого терміна через пробіл
-        # Пріоритет 3: інші входження
-        query = f"""
-        SELECT * FROM foods 
-        WHERE {where_conditions}
-        ORDER BY 
-            CASE 
-                WHEN LOWER(name) LIKE ? THEN 1
-                WHEN LOWER(name) LIKE ? THEN 1
-                WHEN LOWER(name) LIKE ? THEN 2
-                ELSE 3
-            END,
-            protein DESC 
-        LIMIT 12
-        """
-        
-        params = [f"%{w}%" for w in words]
-        params.extend([
-            f"{first_word}%",       # На початку рядка
-            f"%, {first_word}%",     # Одразу після коми (стандарт бази USDA)
-            f"% {first_word}%"      # Окреме слово через пробіл
-        ])
-        
-        res = client.execute(query, params)
+        raw_res = client.execute(query, params)
         col_names = [c[1] for c in client.execute("PRAGMA table_info(foods)").rows]
         
-        if res.rows:
-            for r in res.rows:
-                item_data = dict(zip(col_names, r))
+        candidates = [dict(zip(col_names, row)) for row in raw_res.rows]
+        
+        # Word-boundary filtering (\b) to eliminate partial substring matches (e.g. bread in breaded)
+        filtered_candidates = []
+        first_token = tokens[0]
+        
+        for item in candidates:
+            item_name_lower = item["name"].lower()
+            
+            # Require all search tokens as whole words or word prefixes
+            matches_all = True
+            for t in tokens:
+                pattern = rf"\b{re.escape(t)}"
+                if not re.search(pattern, item_name_lower):
+                    matches_all = False
+                    break
+            
+            if matches_all:
+                # Ranking score:
+                # 100: starts with token (e.g., "Bread, ...", "Salmon, ...")
+                # 85: exact category match in USDA format (e.g., "Fish, salmon, ...")
+                # 60: token exists elsewhere as a standalone word
+                score = 0
+                if item_name_lower.startswith(first_token):
+                    score = 100
+                elif f", {first_token}" in item_name_lower:
+                    score = 85
+                elif f" {first_token}" in item_name_lower:
+                    score = 60
+                else:
+                    score = 40
+                
+                # Small bonus for protein to sort within the same relevance bracket
+                score += min(item.get("protein", 0), 15)
+                filtered_candidates.append((score, item))
+        
+        filtered_candidates.sort(key=lambda x: x[0], reverse=True)
+        final_items = [x[1] for x in filtered_candidates[:12]]
+        
+        if final_items:
+            for item_data in final_items:
                 fdc_id = item_data["fdc_id"]
                 name = item_data["name"]
                 kcal = item_data.get("calories", 0)
@@ -191,7 +204,7 @@ if search_term:
         else:
             st.info("No matching foods found.")
 
-# 2. Обраний раціон та аналітика
+# 2. Meal Plan & Analytics
 if st.session_state.cart:
     st.divider()
     st.subheader(f"2. Your Meal Plan ({len(st.session_state.cart)} items)")
