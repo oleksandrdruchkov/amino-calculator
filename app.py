@@ -3,6 +3,7 @@ import streamlit as st
 import libsql_client
 import pandas as pd
 
+# 1. Конфігурація сторінки
 st.set_page_config(
     page_title="AminoCalc",
     page_icon="🥗",
@@ -10,7 +11,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Адаптивні стилі під мобільні екрани
+# Адаптивний CSS під мобільні екрани
 st.markdown("""
 <style>
     @media (max-width: 768px) {
@@ -28,6 +29,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Еталонні профілі ВООЗ/ФАО 2007 (мг на 1 г білка)
 WHO_REFERENCE = {
     "Histidine": 15.0,
     "Isoleucine": 30.0,
@@ -40,6 +42,7 @@ WHO_REFERENCE = {
     "Valine": 39.0
 }
 
+# Добова потреба на 1 кг маси тіла (мг/кг/день)
 WHO_DAILY_REQ_PER_KG = {
     "Histidine": 10.0,
     "Isoleucine": 20.0,
@@ -52,6 +55,7 @@ WHO_DAILY_REQ_PER_KG = {
     "Valine": 26.0
 }
 
+# Орієнтовні добові норми мікронутрієнтів для дорослих (RDA / DV)
 DAILY_VALUES = {
     "calcium": 1000.0,
     "iron": 14.0,
@@ -89,6 +93,7 @@ client = get_db()
 
 @st.cache_data(ttl=3600)
 def load_food_catalog():
+    # Кешуємо каталог для миттєвого пошуку
     res = client.execute("SELECT fdc_id, name, calories, protein, fat, carbs, fiber FROM foods")
     return res.rows
 
@@ -108,14 +113,19 @@ with st.expander("⚙️ Your Profile & Targets", expanded=False):
     target_protein_total = body_weight * protein_target_per_kg
     st.info(f"🎯 Daily Protein Target: **{target_protein_total:.1f} g** ({protein_target_per_kg} g/kg)")
 
+# Ініціалізація стану сесії
 if "cart" not in st.session_state:
     st.session_state.cart = []
+
+if "search_query" not in st.session_state:
+    st.session_state.search_query = ""
 
 # 1. Пошук продуктів
 st.subheader("1. Search & Add Food")
 search_term = st.text_input(
     "Search food item (e.g., salmon, bread, egg, oats, chickpeas, chicken breast):",
-    placeholder="Type food name..."
+    placeholder="Type food name...",
+    key="search_query"
 )
 
 if search_term:
@@ -129,7 +139,7 @@ if search_term:
             fdc_id, name, kcal, prot, fat, carbs, fiber = row
             name_lower = name.lower()
             
-            # Перевірка наявності кожного токена
+            # Перевірка збігу токенів за межами слів
             matches_all = True
             for t in tokens:
                 if t in ("skin", "skinless"):
@@ -153,7 +163,6 @@ if search_term:
                         else:
                             score += 50
                     else:
-                        # Точний початок назви або сегмента через кому (стандарт USDA)
                         if name_lower.startswith(t):
                             score += 100
                         elif f", {t}" in name_lower:
@@ -163,11 +172,9 @@ if search_term:
                         else:
                             score += 20
                 
-                # Додатковий пріоритет готовій рибі/м'ясу без шкіри
                 if any(k in tokens for k in ("skin", "skinless")) and "skin not eaten" in name_lower:
                     score += 100
                 
-                # Невеликий коефіцієнт білка
                 score += min(prot * 0.5, 15)
                 
                 results.append((score, {
@@ -196,23 +203,6 @@ if search_term:
                     st.markdown(f"**{name}**")
                     st.caption(f"Per 100g: **{kcal:.0f} kcal** | P: **{prot:.1f}g** | F: **{fat:.1f}g** | C: **{carbs:.1f}g**")
                     
-                    with st.expander("🔎 View 100g Detailed Profile"):
-                        full_row = client.execute("SELECT * FROM foods WHERE fdc_id = ?", [fdc_id]).rows[0]
-                        col_names = [c[1] for c in client.execute("PRAGMA table_info(foods)").rows]
-                        detailed = dict(zip(col_names, full_row))
-                        
-                        st.write(
-                            f"**Minerals:** Ca: {detailed.get('calcium',0):.0f}mg | Fe: {detailed.get('iron',0):.1f}mg | "
-                            f"Mg: {detailed.get('magnesium',0):.0f}mg | K: {detailed.get('potassium',0):.0f}mg | Zn: {detailed.get('zinc',0):.1f}mg"
-                        )
-                        st.write(
-                            f"**Vitamins:** Vit C: {detailed.get('vitamin_c',0):.1f}mg | Vit B12: {detailed.get('vitamin_b12',0):.2f}mcg | "
-                            f"Folate: {detailed.get('folate_b9',0):.0f}mcg | Vit B6: {detailed.get('vitamin_b6',0):.2f}mg"
-                        )
-                        st.write(
-                            f"**Fats:** Saturated: {detailed.get('fat_saturated',0):.1f}g | Fiber: {detailed.get('fiber',0):.1f}g"
-                        )
-                    
                     c_inp, c_btn = st.columns([2, 1])
                     with c_inp:
                         portion = st.number_input("Portion (g)", min_value=10, max_value=2000, value=100, step=10, key=f"inp_{fdc_id}")
@@ -225,6 +215,9 @@ if search_term:
                             item_to_add["grams"] = portion
                             st.session_state.cart.append(item_to_add)
                             st.toast(f"Added {portion}g of {name[:25]}...!")
+                            
+                            # Очищуємо поле пошуку: це ховає результати видачі
+                            st.session_state.search_query = ""
                             st.rerun()
         else:
             st.info("No matching foods found.")
@@ -234,14 +227,19 @@ if st.session_state.cart:
     st.divider()
     st.subheader(f"2. Your Meal Plan ({len(st.session_state.cart)} items)")
     
+    # Безпечне видалення без IndexError
+    item_to_remove = None
     for idx, it in enumerate(st.session_state.cart):
         col_item, col_del = st.columns([5, 1])
         with col_item:
             st.write(f"• **{it['name']}** — {it['grams']}g ({(it['protein'] * it['grams'] / 100):.1f}g protein)")
         with col_del:
             if st.button("✕", key=f"del_{idx}", help="Remove item"):
-                st.session_state.cart.pop(idx)
-                st.rerun()
+                item_to_remove = idx
+
+    if item_to_remove is not None:
+        st.session_state.cart.pop(item_to_remove)
+        st.rerun()
 
     if st.button("🗑️ Clear Meal Plan", use_container_width=True):
         st.session_state.cart = []
