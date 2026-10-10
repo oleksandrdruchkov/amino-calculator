@@ -93,7 +93,7 @@ client = get_db()
 
 @st.cache_data(ttl=3600)
 def load_food_catalog():
-    # Фільтруємо на рівні бази: завантажуємо виключно записи з наявними амінокислотами
+    # Завантажуємо лише позиції, де є виміряні незамінні амінокислоти
     res = client.execute("""
         SELECT fdc_id, name, calories, protein, fat, carbs, fiber,
                COALESCE(source_db, 'usda_sr_legacy') AS source_db,
@@ -111,7 +111,7 @@ def load_food_catalog():
 foods_catalog = load_food_catalog()
 
 st.title("🥗 AminoCalc")
-st.caption("Protein Quality, Amino Acid Score & Complete Micronutrient Profiler (Verified Amino Acid Profiles Only)")
+st.caption("Protein Quality, Amino Acid Score & Complete Micronutrient Profiler (UK CoFID + USDA SR Legacy)")
 
 # Налаштування профілю
 with st.expander("⚙️ Your Profile & Targets", expanded=False):
@@ -133,6 +133,15 @@ if "search_key_id" not in st.session_state:
 
 # 1. Пошук продуктів
 st.subheader("1. Search & Add Food")
+
+# Фільтр вибору бази даних
+db_choice = st.radio(
+    "Select Database Source:",
+    options=["All Sources", "🇬🇧 CoFID UK Only", "🇺🇸 USDA Legacy Only"],
+    horizontal=True,
+    help="CoFID UK is calibrated for British/Irish food composition, USDA covers a broader range."
+)
+
 search_term = st.text_input(
     "Search food item (e.g., salmon, bread, egg, oats, chickpeas, chicken breast):",
     placeholder="Type food name...",
@@ -148,6 +157,13 @@ if search_term:
         
         for row in foods_catalog:
             fdc_id, name, kcal, prot, fat, carbs, fiber, src_db, q_grade = row
+            
+            # Фільтрація за обраною базою даних
+            if db_choice == "🇬🇧 CoFID UK Only" and src_db != "cofid_uk":
+                continue
+            if db_choice == "🇺🇸 USDA Legacy Only" and src_db != "usda_sr_legacy":
+                continue
+
             name_lower = name.lower()
             
             # Перевірка збігу токенів за межами слів
@@ -186,7 +202,7 @@ if search_term:
                 if any(k in tokens for k in ("skin", "skinless")) and "skin not eaten" in name_lower:
                     score += 100
                 
-                # Пріоритет лабораторної бази CoFID
+                # Додатковий пріоритет CoFID UK при загальному пошуку
                 if src_db == "cofid_uk":
                     score += 40
                 
@@ -241,18 +257,16 @@ if search_term:
                             st.session_state.cart.append(item_to_add)
                             st.toast(f"Added {portion}g of {name[:25]}...!")
                             
-                            # Безпечне очищення пошуку
                             st.session_state.search_key_id += 1
                             st.rerun()
         else:
-            st.info("No matching foods found with complete amino acid profiles.")
+            st.info(f"No matching foods found in '{db_choice}'.")
 
 # 2. Обраний раціон та аналітика
 if st.session_state.cart:
     st.divider()
     st.subheader(f"2. Your Meal Plan ({len(st.session_state.cart)} items)")
     
-    # Безпечне видалення без IndexError
     item_to_remove = None
     for idx, it in enumerate(st.session_state.cart):
         col_item, col_del = st.columns([5, 1])
