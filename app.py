@@ -3,7 +3,7 @@ import streamlit as st
 import libsql_client
 import pandas as pd
 
-# 1. Page Configuration
+# 1. Налаштування сторінки
 st.set_page_config(
     page_title="AminoCalc",
     page_icon="🥗",
@@ -11,7 +11,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Responsive mobile styles
+# Адаптивний CSS
 st.markdown("""
 <style>
     @media (max-width: 768px) {
@@ -29,7 +29,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# WHO/FAO/UNU 2007 Reference Pattern for Adults (mg/g protein)
 WHO_REFERENCE = {
     "Histidine": 15.0,
     "Isoleucine": 30.0,
@@ -42,7 +41,6 @@ WHO_REFERENCE = {
     "Valine": 39.0
 }
 
-# WHO Daily Requirement per kg body weight (mg/kg/day)
 WHO_DAILY_REQ_PER_KG = {
     "Histidine": 10.0,
     "Isoleucine": 20.0,
@@ -55,30 +53,31 @@ WHO_DAILY_REQ_PER_KG = {
     "Valine": 26.0
 }
 
-# Daily Values / RDA for Micronutrients
 DAILY_VALUES = {
-    "calcium": 1000.0,      # mg
-    "iron": 14.0,           # mg
-    "magnesium": 400.0,     # mg
-    "phosphorus": 700.0,    # mg
-    "potassium": 3500.0,    # mg
-    "sodium": 2000.0,       # mg
-    "zinc": 11.0,           # mg
-    "copper": 0.9,          # mg
-    "selenium": 55.0,       # mcg
-    "vitamin_c": 90.0,      # mg
-    "thiamin_b1": 1.2,      # mg
-    "riboflavin_b2": 1.3,   # mg
-    "niacin_b3": 16.0,      # mg
-    "vitamin_b6": 1.7,      # mg
-    "folate_b9": 400.0,     # mcg
-    "vitamin_b12": 2.4,     # mcg
-    "vitamin_a_rae": 900.0, # mcg
-    "vitamin_e": 15.0,      # mg
-    "vitamin_d": 15.0,      # mcg (600 IU)
-    "vitamin_k": 120.0,     # mcg
-    "fiber": 30.0           # g
+    "calcium": 1000.0,
+    "iron": 14.0,
+    "magnesium": 400.0,
+    "phosphorus": 700.0,
+    "potassium": 3500.0,
+    "sodium": 2000.0,
+    "zinc": 11.0,
+    "copper": 0.9,
+    "selenium": 55.0,
+    "vitamin_c": 90.0,
+    "thiamin_b1": 1.2,
+    "riboflavin_b2": 1.3,
+    "niacin_b3": 16.0,
+    "vitamin_b6": 1.7,
+    "folate_b9": 400.0,
+    "vitamin_b12": 2.4,
+    "vitamin_a_rae": 900.0,
+    "vitamin_e": 15.0,
+    "vitamin_d": 15.0,
+    "vitamin_k": 120.0,
+    "fiber": 30.0
 }
+
+STOP_WORDS = {"without", "with", "and", "the", "in", "of", "for", "no"}
 
 @st.cache_resource
 def get_db():
@@ -89,10 +88,18 @@ def get_db():
 
 client = get_db()
 
+# Швидке завантаження та кешування базового каталогу (7 759 продуктів)
+@st.cache_data(ttl=3600)
+def load_food_catalog():
+    res = client.execute("SELECT fdc_id, name, calories, protein, fat, carbs, fiber FROM foods")
+    return res.rows
+
+foods_catalog = load_food_catalog()
+
 st.title("🥗 AminoCalc")
 st.caption("Protein Quality, Amino Acid Score & Complete Micronutrient Profiler (WHO/FAO 2007)")
 
-# User Profile Settings
+# Налаштування профілю
 with st.expander("⚙️ Your Profile & Targets", expanded=False):
     col_w, col_p = st.columns(2)
     with col_w:
@@ -106,63 +113,74 @@ with st.expander("⚙️ Your Profile & Targets", expanded=False):
 if "cart" not in st.session_state:
     st.session_state.cart = []
 
-# 1. Search & Add Food (Word-boundary filtered & token ranked)
+# 1. Пошук продуктів
 st.subheader("1. Search & Add Food")
 search_term = st.text_input(
-    "Search food item (e.g., bread, salmon, egg, oats, chickpeas, chicken breast):",
+    "Search food item (e.g., salmon, bread, egg, oats, chickpeas, chicken breast):",
     placeholder="Type food name..."
 )
 
 if search_term:
     raw_tokens = [w.strip(",. ") for w in search_term.strip().lower().split()]
-    tokens = [w for w in raw_tokens if len(w) > 0]
+    tokens = [w for w in raw_tokens if len(w) > 0 and w not in STOP_WORDS]
     
     if tokens:
-        where_conditions = " AND ".join(["LOWER(name) LIKE ?" for _ in tokens])
-        query = f"SELECT * FROM foods WHERE {where_conditions}"
-        params = [f"%{t}%" for t in tokens]
-        
-        raw_res = client.execute(query, params)
-        col_names = [c[1] for c in client.execute("PRAGMA table_info(foods)").rows]
-        
-        candidates = [dict(zip(col_names, row)) for row in raw_res.rows]
-        
-        # Word-boundary filtering (\b) to eliminate partial substring matches (e.g. bread in breaded)
-        filtered_candidates = []
         first_token = tokens[0]
+        results = []
         
-        for item in candidates:
-            item_name_lower = item["name"].lower()
+        for row in foods_catalog:
+            fdc_id, name, kcal, prot, fat, carbs, fiber = row
+            name_lower = name.lower()
             
-            # Require all search tokens as whole words or word prefixes
+            # Перевірка наявності кожного токена як окремого слова
+            # Для "bread" не підійде "breaded", але підійде "bread"
             matches_all = True
             for t in tokens:
-                pattern = rf"\b{re.escape(t)}"
-                if not re.search(pattern, item_name_lower):
-                    matches_all = False
-                    break
+                if t == "skin":
+                    # Розуміє як "skin", так і "skin not eaten"
+                    if "skin" not in name_lower:
+                        matches_all = False
+                        break
+                else:
+                    pattern = rf"\b{re.escape(t)}"
+                    if not re.search(pattern, name_lower):
+                        matches_all = False
+                        break
             
             if matches_all:
-                # Ranking score:
-                # 100: starts with token (e.g., "Bread, ...", "Salmon, ...")
-                # 85: exact category match in USDA format (e.g., "Fish, salmon, ...")
-                # 60: token exists elsewhere as a standalone word
                 score = 0
-                if item_name_lower.startswith(first_token):
-                    score = 100
-                elif f", {first_token}" in item_name_lower:
-                    score = 85
-                elif f" {first_token}" in item_name_lower:
-                    score = 60
-                else:
-                    score = 40
                 
-                # Small bonus for protein to sort within the same relevance bracket
-                score += min(item.get("protein", 0), 15)
-                filtered_candidates.append((score, item))
+                # 1. Назва починається з першого введеного слова (наприклад, "Bread, ...")
+                if name_lower.startswith(first_token):
+                    score = 120
+                # 2. Категорія USDA з комою (наприклад, "Fish, salmon, ...")
+                elif f", {first_token}" in name_lower:
+                    score = 110
+                # 3. Окреме слово через пробіл
+                elif f" {first_token}" in name_lower:
+                    score = 80
+                else:
+                    score = 50
+                
+                # Пріоритет для продуктів без шкіри або готових, якщо користувач згадав skin
+                if "skin" in tokens and ("skin not eaten" in name_lower or "without skin" in name_lower):
+                    score += 40
+                
+                # Невеликий бонус за білок у межах однакової релевантності
+                score += min(prot, 15)
+                
+                results.append((score, {
+                    "fdc_id": fdc_id,
+                    "name": name,
+                    "calories": kcal,
+                    "protein": prot,
+                    "fat": fat,
+                    "carbs": carbs,
+                    "fiber": fiber
+                }))
         
-        filtered_candidates.sort(key=lambda x: x[0], reverse=True)
-        final_items = [x[1] for x in filtered_candidates[:12]]
+        results.sort(key=lambda x: x[0], reverse=True)
+        final_items = [x[1] for x in results[:15]]
         
         if final_items:
             for item_data in final_items:
@@ -177,17 +195,21 @@ if search_term:
                     st.markdown(f"**{name}**")
                     st.caption(f"Per 100g: **{kcal:.0f} kcal** | P: **{prot:.1f}g** | F: **{fat:.1f}g** | C: **{carbs:.1f}g**")
                     
-                    with st.expander("🔎 View 100g Nutrition Details"):
+                    with st.expander("🔎 View 100g Detailed Profile"):
+                        full_row = client.execute("SELECT * FROM foods WHERE fdc_id = ?", [fdc_id]).rows[0]
+                        col_names = [c[1] for c in client.execute("PRAGMA table_info(foods)").rows]
+                        detailed = dict(zip(col_names, full_row))
+                        
                         st.write(
-                            f"**Minerals:** Ca: {item_data.get('calcium',0):.0f}mg | Fe: {item_data.get('iron',0):.1f}mg | "
-                            f"Mg: {item_data.get('magnesium',0):.0f}mg | K: {item_data.get('potassium',0):.0f}mg | Zn: {item_data.get('zinc',0):.1f}mg"
+                            f"**Minerals:** Ca: {detailed.get('calcium',0):.0f}mg | Fe: {detailed.get('iron',0):.1f}mg | "
+                            f"Mg: {detailed.get('magnesium',0):.0f}mg | K: {detailed.get('potassium',0):.0f}mg | Zn: {detailed.get('zinc',0):.1f}mg"
                         )
                         st.write(
-                            f"**Vitamins:** Vit C: {item_data.get('vitamin_c',0):.1f}mg | Vit B12: {item_data.get('vitamin_b12',0):.2f}mcg | "
-                            f"Folate: {item_data.get('folate_b9',0):.0f}mcg | Vit B6: {item_data.get('vitamin_b6',0):.2f}mg"
+                            f"**Vitamins:** Vit C: {detailed.get('vitamin_c',0):.1f}mg | Vit B12: {detailed.get('vitamin_b12',0):.2f}mcg | "
+                            f"Folate: {detailed.get('folate_b9',0):.0f}mcg | Vit B6: {detailed.get('vitamin_b6',0):.2f}mg"
                         )
                         st.write(
-                            f"**Fats:** Saturated: {item_data.get('fat_saturated',0):.1f}g | Fiber: {item_data.get('fiber',0):.1f}g"
+                            f"**Fats:** Saturated: {detailed.get('fat_saturated',0):.1f}g | Fiber: {detailed.get('fiber',0):.1f}g"
                         )
                     
                     c_inp, c_btn = st.columns([2, 1])
@@ -196,7 +218,9 @@ if search_term:
                     with c_btn:
                         st.write("")
                         if st.button("➕ Add", key=f"btn_{fdc_id}", use_container_width=True):
-                            item_to_add = dict(item_data)
+                            full_row = client.execute("SELECT * FROM foods WHERE fdc_id = ?", [fdc_id]).rows[0]
+                            col_names = [c[1] for c in client.execute("PRAGMA table_info(foods)").rows]
+                            item_to_add = dict(zip(col_names, full_row))
                             item_to_add["grams"] = portion
                             st.session_state.cart.append(item_to_add)
                             st.toast(f"Added {portion}g of {name[:25]}...!")
@@ -204,7 +228,7 @@ if search_term:
         else:
             st.info("No matching foods found.")
 
-# 2. Meal Plan & Analytics
+# 2. Обраний раціон та аналітика
 if st.session_state.cart:
     st.divider()
     st.subheader(f"2. Your Meal Plan ({len(st.session_state.cart)} items)")
