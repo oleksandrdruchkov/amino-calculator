@@ -93,19 +93,25 @@ client = get_db()
 
 @st.cache_data(ttl=3600)
 def load_food_catalog():
-    # Завантажуємо продукти разом з метаданими бази
+    # Фільтруємо на рівні бази: завантажуємо виключно записи з наявними амінокислотами
     res = client.execute("""
         SELECT fdc_id, name, calories, protein, fat, carbs, fiber,
-               COALESCE(source_db, 'usda_sr_legacy') as source_db,
-               COALESCE(quality_grade, 'B') as quality_grade
+               COALESCE(source_db, 'usda_sr_legacy') AS source_db,
+               COALESCE(quality_grade, 'B') AS quality_grade
         FROM foods
+        WHERE (
+            COALESCE(histidine, 0) + COALESCE(isoleucine, 0) + COALESCE(leucine, 0) +
+            COALESCE(lysine, 0) + COALESCE(methionine, 0) + COALESCE(cystine, 0) +
+            COALESCE(phenylalanine, 0) + COALESCE(tyrosine, 0) + COALESCE(threonine, 0) +
+            COALESCE(tryptophan, 0) + COALESCE(valine, 0)
+        ) > 0
     """)
     return res.rows
 
 foods_catalog = load_food_catalog()
 
 st.title("🥗 AminoCalc")
-st.caption("Protein Quality, Amino Acid Score & Complete Micronutrient Profiler (USDA + CoFID UK)")
+st.caption("Protein Quality, Amino Acid Score & Complete Micronutrient Profiler (Verified Amino Acid Profiles Only)")
 
 # Налаштування профілю
 with st.expander("⚙️ Your Profile & Targets", expanded=False):
@@ -180,7 +186,7 @@ if search_term:
                 if any(k in tokens for k in ("skin", "skinless")) and "skin not eaten" in name_lower:
                     score += 100
                 
-                # Пріоритет європейській базі CoFID
+                # Пріоритет лабораторної бази CoFID
                 if src_db == "cofid_uk":
                     score += 40
                 
@@ -235,16 +241,18 @@ if search_term:
                             st.session_state.cart.append(item_to_add)
                             st.toast(f"Added {portion}g of {name[:25]}...!")
                             
+                            # Безпечне очищення пошуку
                             st.session_state.search_key_id += 1
                             st.rerun()
         else:
-            st.info("No matching foods found.")
+            st.info("No matching foods found with complete amino acid profiles.")
 
 # 2. Обраний раціон та аналітика
 if st.session_state.cart:
     st.divider()
     st.subheader(f"2. Your Meal Plan ({len(st.session_state.cart)} items)")
     
+    # Безпечне видалення без IndexError
     item_to_remove = None
     for idx, it in enumerate(st.session_state.cart):
         col_item, col_del = st.columns([5, 1])
@@ -284,18 +292,14 @@ if st.session_state.cart:
         "Valine": sum_nutrient("valine") * 1000
     }
 
-    # Перевірка наявності амінокислот
-    total_aa_mass = sum(aa_totals_mg.values())
-    has_amino_data = total_aa_mass > 0
-
     scores = {}
-    if total_protein > 0 and has_amino_data:
+    if total_protein > 0:
         for aa, ref in WHO_REFERENCE.items():
             mg_per_g_protein = aa_totals_mg[aa] / total_protein
             scores[aa] = round(mg_per_g_protein / ref, 2)
 
     limiting_aa = min(scores, key=scores.get) if scores else "N/A"
-    min_score = scores[limiting_aa] if scores else (1.0 if not has_amino_data else 0.0)
+    min_score = scores[limiting_aa] if scores else 1.0
     pdcaas = min(min_score, 1.0)
     effective_protein = total_protein * pdcaas
 
@@ -305,11 +309,8 @@ if st.session_state.cart:
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Calories", f"{total_cals:.0f} kcal")
     m2.metric("Total Protein", f"{total_protein:.1f} g", f"Target: {target_protein_total:.1f} g")
-    m3.metric("PDCAAS Score", f"{pdcaas * 100:.0f}%" if has_amino_data else "N/A", f"Limiting: {limiting_aa}")
-    m4.metric("Usable (Net) Protein", f"{effective_protein:.1f} g" if has_amino_data else f"{total_protein:.1f} g")
-
-    if not has_amino_data and total_protein > 0:
-        st.warning("⚠️ Обрані продукти містять макронутрієнти, але в них відсутній детальний амінокислотний профіль у базі. PDCAAS не розраховано.")
+    m3.metric("PDCAAS Score", f"{pdcaas * 100:.0f}%", f"Limiting: {limiting_aa}")
+    m4.metric("Usable (Net) Protein", f"{effective_protein:.1f} g")
 
     tab_aa, tab_macros, tab_min, tab_vit, tab_fats = st.tabs([
         "🥩 Protein & Aminos",
@@ -320,29 +321,26 @@ if st.session_state.cart:
     ])
 
     with tab_aa:
-        if has_amino_data:
-            st.write("##### Amino Acid Profile (% of WHO Requirement):")
-            score_df = pd.DataFrame({
-                "Amino Acid": list(scores.keys()),
-                "Score (%)": [v * 100 for v in scores.values()]
-            }).set_index("Amino Acid")
-            st.bar_chart(score_df)
+        st.write("##### Amino Acid Profile (% of WHO Requirement):")
+        score_df = pd.DataFrame({
+            "Amino Acid": list(scores.keys()),
+            "Score (%)": [v * 100 for v in scores.values()]
+        }).set_index("Amino Acid")
+        st.bar_chart(score_df)
 
-            detail_rows = []
-            for aa in WHO_REFERENCE.keys():
-                daily_req = WHO_DAILY_REQ_PER_KG[aa] * body_weight
-                actual_mg = aa_totals_mg[aa]
-                pct = (actual_mg / daily_req) * 100 if daily_req > 0 else 0
-                detail_rows.append({
-                    "Amino Acid": aa,
-                    "Intake (mg)": int(actual_mg),
-                    "Daily Requirement (mg)": int(daily_req),
-                    "Requirement Met": f"{pct:.0f}%",
-                    "Quality Score": f"{scores.get(aa, 0)*100:.0f}%"
-                })
-            st.dataframe(pd.DataFrame(detail_rows), use_container_width=True)
-        else:
-            st.info("No amino acid laboratory data available for the currently selected items.")
+        detail_rows = []
+        for aa in WHO_REFERENCE.keys():
+            daily_req = WHO_DAILY_REQ_PER_KG[aa] * body_weight
+            actual_mg = aa_totals_mg[aa]
+            pct = (actual_mg / daily_req) * 100 if daily_req > 0 else 0
+            detail_rows.append({
+                "Amino Acid": aa,
+                "Intake (mg)": int(actual_mg),
+                "Daily Requirement (mg)": int(daily_req),
+                "Requirement Met": f"{pct:.0f}%",
+                "Quality Score": f"{scores.get(aa, 0)*100:.0f}%"
+            })
+        st.dataframe(pd.DataFrame(detail_rows), use_container_width=True)
 
     with tab_macros:
         c1, c2, c3, c4 = st.columns(4)
