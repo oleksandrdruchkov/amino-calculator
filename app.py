@@ -117,15 +117,15 @@ with st.expander("⚙️ Your Profile & Targets", expanded=False):
 if "cart" not in st.session_state:
     st.session_state.cart = []
 
-if "search_query" not in st.session_state:
-    st.session_state.search_query = ""
+if "search_key_id" not in st.session_state:
+    st.session_state.search_key_id = 0
 
 # 1. Пошук продуктів
 st.subheader("1. Search & Add Food")
 search_term = st.text_input(
     "Search food item (e.g., salmon, bread, egg, oats, chickpeas, chicken breast):",
     placeholder="Type food name...",
-    key="search_query"
+    key=f"search_input_{st.session_state.search_key_id}"
 )
 
 if search_term:
@@ -216,8 +216,8 @@ if search_term:
                             st.session_state.cart.append(item_to_add)
                             st.toast(f"Added {portion}g of {name[:25]}...!")
                             
-                            # Очищуємо поле пошуку: це ховає результати видачі
-                            st.session_state.search_query = ""
+                            # Безпечне очищення: змінюємо номер версії віджета, щоб скинути ввід без помилок
+                            st.session_state.search_key_id += 1
                             st.rerun()
         else:
             st.info("No matching foods found.")
