@@ -105,80 +105,91 @@ with st.expander("⚙️ Your Profile & Targets", expanded=False):
 if "cart" not in st.session_state:
     st.session_state.cart = []
 
-# 1. Пошук продуктів із фільтрацією за релевантністю
+# 1. Пошук продуктів із мультислівним зіставленням та зваженою релевантністю
 st.subheader("1. Search & Add Food")
-search_term = st.text_input("Search food item (e.g., bread, egg, oats, salmon, chickpeas, chicken breast):", placeholder="Type food name...")
+search_term = st.text_input(
+    "Search food item (e.g., salmon, bread, egg, oats, chickpeas, chicken breast):",
+    placeholder="Type food name..."
+)
 
 if search_term:
-    clean_term = search_term.strip().lower()
+    # Розбиваємо запит на окремі пошукові слова, очищуючи від пунктуації
+    raw_words = [w.strip(",. ") for w in search_term.strip().lower().split()]
+    words = [w for w in raw_words if len(w) > 0]
     
-    # Пріоритет:
-    # 1. Назва починається з шуканого слова
-    # 2. Назва містить слово після коми або пробілу
-    # 3. Будь-яке інше входження
-    query = """
-    SELECT * FROM foods 
-    WHERE LOWER(name) LIKE ? 
-    ORDER BY 
-        CASE 
-            WHEN LOWER(name) LIKE ? THEN 1
-            WHEN LOWER(name) LIKE ? THEN 2
-            WHEN LOWER(name) LIKE ? THEN 3
-            ELSE 4
-        END,
-        protein DESC 
-    LIMIT 6
-    """
-    params = [
-        f"%{clean_term}%",
-        f"{clean_term}%",
-        f"%, {clean_term}%",
-        f"% {clean_term}%"
-    ]
-    res = client.execute(query, params)
-    col_names = [c[1] for c in client.execute("PRAGMA table_info(foods)").rows]
-    
-    if res.rows:
-        for r in res.rows:
-            item_data = dict(zip(col_names, r))
-            fdc_id = item_data["fdc_id"]
-            name = item_data["name"]
-            kcal = item_data.get("calories", 0)
-            prot = item_data.get("protein", 0)
-            fat = item_data.get("fat", 0)
-            carbs = item_data.get("carbs", 0)
-            
-            with st.container(border=True):
-                st.markdown(f"**{name}**")
-                st.caption(f"Per 100g: **{kcal:.0f} kcal** | P: **{prot:.1f}g** | F: **{fat:.1f}g** | C: **{carbs:.1f}g**")
+    if words:
+        first_word = words[0]
+        # Кожне слово має зустрічатися в назві (незалежно від порядку та розділових знаків)
+        where_conditions = " AND ".join(["LOWER(name) LIKE ?" for _ in words])
+        
+        # Розрахунок ранжування:
+        # Пріоритет 1: перше слово стоїть на початку або одразу після коми категорії USDA ("Fish, salmon...")
+        # Пріоритет 2: точний збіг слова як окремого терміна через пробіл
+        # Пріоритет 3: інші входження
+        query = f"""
+        SELECT * FROM foods 
+        WHERE {where_conditions}
+        ORDER BY 
+            CASE 
+                WHEN LOWER(name) LIKE ? THEN 1
+                WHEN LOWER(name) LIKE ? THEN 1
+                WHEN LOWER(name) LIKE ? THEN 2
+                ELSE 3
+            END,
+            protein DESC 
+        LIMIT 12
+        """
+        
+        params = [f"%{w}%" for w in words]
+        params.extend([
+            f"{first_word}%",       # На початку рядка
+            f"%, {first_word}%",     # Одразу після коми (стандарт бази USDA)
+            f"% {first_word}%"      # Окреме слово через пробіл
+        ])
+        
+        res = client.execute(query, params)
+        col_names = [c[1] for c in client.execute("PRAGMA table_info(foods)").rows]
+        
+        if res.rows:
+            for r in res.rows:
+                item_data = dict(zip(col_names, r))
+                fdc_id = item_data["fdc_id"]
+                name = item_data["name"]
+                kcal = item_data.get("calories", 0)
+                prot = item_data.get("protein", 0)
+                fat = item_data.get("fat", 0)
+                carbs = item_data.get("carbs", 0)
                 
-                # Швидкий огляд мікронутрієнтів продукту
-                with st.expander("🔎 View 100g Nutrition Details"):
-                    st.write(
-                        f"**Minerals:** Ca: {item_data.get('calcium',0):.0f}mg | Fe: {item_data.get('iron',0):.1f}mg | "
-                        f"Mg: {item_data.get('magnesium',0):.0f}mg | K: {item_data.get('potassium',0):.0f}mg | Zn: {item_data.get('zinc',0):.1f}mg"
-                    )
-                    st.write(
-                        f"**Vitamins:** Vit C: {item_data.get('vitamin_c',0):.1f}mg | Vit B12: {item_data.get('vitamin_b12',0):.2f}mcg | "
-                        f"Folate: {item_data.get('folate_b9',0):.0f}mcg | Vit B6: {item_data.get('vitamin_b6',0):.2f}mg"
-                    )
-                    st.write(
-                        f"**Fats:** Saturated: {item_data.get('fat_saturated',0):.1f}g | Fiber: {item_data.get('fiber',0):.1f}g"
-                    )
-                
-                c_inp, c_btn = st.columns([2, 1])
-                with c_inp:
-                    portion = st.number_input("Portion (g)", min_value=10, max_value=2000, value=100, step=10, key=f"inp_{fdc_id}")
-                with c_btn:
-                    st.write("")
-                    if st.button("➕ Add", key=f"btn_{fdc_id}", use_container_width=True):
-                        item_to_add = dict(item_data)
-                        item_to_add["grams"] = portion
-                        st.session_state.cart.append(item_to_add)
-                        st.toast(f"Added {portion}g of {name[:25]}...!")
-                        st.rerun()
-    else:
-        st.info("No matching foods found.")
+                with st.container(border=True):
+                    st.markdown(f"**{name}**")
+                    st.caption(f"Per 100g: **{kcal:.0f} kcal** | P: **{prot:.1f}g** | F: **{fat:.1f}g** | C: **{carbs:.1f}g**")
+                    
+                    with st.expander("🔎 View 100g Nutrition Details"):
+                        st.write(
+                            f"**Minerals:** Ca: {item_data.get('calcium',0):.0f}mg | Fe: {item_data.get('iron',0):.1f}mg | "
+                            f"Mg: {item_data.get('magnesium',0):.0f}mg | K: {item_data.get('potassium',0):.0f}mg | Zn: {item_data.get('zinc',0):.1f}mg"
+                        )
+                        st.write(
+                            f"**Vitamins:** Vit C: {item_data.get('vitamin_c',0):.1f}mg | Vit B12: {item_data.get('vitamin_b12',0):.2f}mcg | "
+                            f"Folate: {item_data.get('folate_b9',0):.0f}mcg | Vit B6: {item_data.get('vitamin_b6',0):.2f}mg"
+                        )
+                        st.write(
+                            f"**Fats:** Saturated: {item_data.get('fat_saturated',0):.1f}g | Fiber: {item_data.get('fiber',0):.1f}g"
+                        )
+                    
+                    c_inp, c_btn = st.columns([2, 1])
+                    with c_inp:
+                        portion = st.number_input("Portion (g)", min_value=10, max_value=2000, value=100, step=10, key=f"inp_{fdc_id}")
+                    with c_btn:
+                        st.write("")
+                        if st.button("➕ Add", key=f"btn_{fdc_id}", use_container_width=True):
+                            item_to_add = dict(item_data)
+                            item_to_add["grams"] = portion
+                            st.session_state.cart.append(item_to_add)
+                            st.toast(f"Added {portion}g of {name[:25]}...!")
+                            st.rerun()
+        else:
+            st.info("No matching foods found.")
 
 # 2. Обраний раціон та аналітика
 if st.session_state.cart:
@@ -198,7 +209,6 @@ if st.session_state.cart:
         st.session_state.cart = []
         st.rerun()
 
-    # Функція агрегації нутрієнтів
     def sum_nutrient(col):
         return sum(it.get(col, 0) * (it["grams"] / 100) for it in st.session_state.cart)
 
@@ -208,7 +218,6 @@ if st.session_state.cart:
     total_carbs = sum_nutrient("carbs")
     total_fiber = sum_nutrient("fiber")
 
-    # Агрегація незамінних амінокислот (мг)
     aa_totals_mg = {
         "Histidine": sum_nutrient("histidine") * 1000,
         "Isoleucine": sum_nutrient("isoleucine") * 1000,
@@ -235,14 +244,12 @@ if st.session_state.cart:
     st.divider()
     st.subheader("3. Comprehensive Nutrition Analysis")
 
-    # Верхні ключові показники
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Calories", f"{total_cals:.0f} kcal")
     m2.metric("Total Protein", f"{total_protein:.1f} g", f"Target: {target_protein_total:.1f} g")
     m3.metric("PDCAAS Score", f"{pdcaas * 100:.0f}%", f"Limiting: {limiting_aa}")
     m4.metric("Usable (Net) Protein", f"{effective_protein:.1f} g")
 
-    # Вкладки нутрієнтів
     tab_aa, tab_macros, tab_min, tab_vit, tab_fats = st.tabs([
         "🥩 Protein & Aminos",
         "🍞 Macros & Fiber",
