@@ -1,0 +1,4 @@
+streamlit
+libsql-client
+pandas
+altair
