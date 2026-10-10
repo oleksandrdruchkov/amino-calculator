@@ -3,7 +3,6 @@ import streamlit as st
 import libsql_client
 import pandas as pd
 
-# 1. Налаштування сторінки
 st.set_page_config(
     page_title="AminoCalc",
     page_icon="🥗",
@@ -11,7 +10,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Адаптивний CSS
+# Адаптивні стилі під мобільні екрани
 st.markdown("""
 <style>
     @media (max-width: 768px) {
@@ -88,7 +87,6 @@ def get_db():
 
 client = get_db()
 
-# Швидке завантаження та кешування базового каталогу (7 759 продуктів)
 @st.cache_data(ttl=3600)
 def load_food_catalog():
     res = client.execute("SELECT fdc_id, name, calories, protein, fat, carbs, fiber FROM foods")
@@ -125,19 +123,16 @@ if search_term:
     tokens = [w for w in raw_tokens if len(w) > 0 and w not in STOP_WORDS]
     
     if tokens:
-        first_token = tokens[0]
         results = []
         
         for row in foods_catalog:
             fdc_id, name, kcal, prot, fat, carbs, fiber = row
             name_lower = name.lower()
             
-            # Перевірка наявності кожного токена як окремого слова
-            # Для "bread" не підійде "breaded", але підійде "bread"
+            # Перевірка наявності кожного токена
             matches_all = True
             for t in tokens:
-                if t == "skin":
-                    # Розуміє як "skin", так і "skin not eaten"
+                if t in ("skin", "skinless"):
                     if "skin" not in name_lower:
                         matches_all = False
                         break
@@ -149,25 +144,31 @@ if search_term:
             
             if matches_all:
                 score = 0
+                for t in tokens:
+                    if t in ("skin", "skinless"):
+                        if "skin not eaten" in name_lower or "without skin" in name_lower:
+                            score += 150
+                        elif "with skin" in name_lower:
+                            score += 30
+                        else:
+                            score += 50
+                    else:
+                        # Точний початок назви або сегмента через кому (стандарт USDA)
+                        if name_lower.startswith(t):
+                            score += 100
+                        elif f", {t}" in name_lower:
+                            score += 90
+                        elif f" {t}" in name_lower:
+                            score += 50
+                        else:
+                            score += 20
                 
-                # 1. Назва починається з першого введеного слова (наприклад, "Bread, ...")
-                if name_lower.startswith(first_token):
-                    score = 120
-                # 2. Категорія USDA з комою (наприклад, "Fish, salmon, ...")
-                elif f", {first_token}" in name_lower:
-                    score = 110
-                # 3. Окреме слово через пробіл
-                elif f" {first_token}" in name_lower:
-                    score = 80
-                else:
-                    score = 50
+                # Додатковий пріоритет готовій рибі/м'ясу без шкіри
+                if any(k in tokens for k in ("skin", "skinless")) and "skin not eaten" in name_lower:
+                    score += 100
                 
-                # Пріоритет для продуктів без шкіри або готових, якщо користувач згадав skin
-                if "skin" in tokens and ("skin not eaten" in name_lower or "without skin" in name_lower):
-                    score += 40
-                
-                # Невеликий бонус за білок у межах однакової релевантності
-                score += min(prot, 15)
+                # Невеликий коефіцієнт білка
+                score += min(prot * 0.5, 15)
                 
                 results.append((score, {
                     "fdc_id": fdc_id,
@@ -180,7 +181,7 @@ if search_term:
                 }))
         
         results.sort(key=lambda x: x[0], reverse=True)
-        final_items = [x[1] for x in results[:15]]
+        final_items = [x[1] for x in results[:18]]
         
         if final_items:
             for item_data in final_items:
