@@ -93,11 +93,9 @@ client = get_db()
 
 @st.cache_data(ttl=3600)
 def load_food_catalog():
-    # Завантажуємо лише позиції, де є виміряні незамінні амінокислоти
+    # Завантажуємо лише позиції з верифікованим амінокислотним профілем
     res = client.execute("""
-        SELECT fdc_id, name, calories, protein, fat, carbs, fiber,
-               COALESCE(source_db, 'usda_sr_legacy') AS source_db,
-               COALESCE(quality_grade, 'B') AS quality_grade
+        SELECT fdc_id, name, calories, protein, fat, carbs, fiber
         FROM foods
         WHERE (
             COALESCE(histidine, 0) + COALESCE(isoleucine, 0) + COALESCE(leucine, 0) +
@@ -111,7 +109,7 @@ def load_food_catalog():
 foods_catalog = load_food_catalog()
 
 st.title("🥗 AminoCalc")
-st.caption("Protein Quality, Amino Acid Score & Complete Micronutrient Profiler (UK CoFID + USDA SR Legacy)")
+st.caption("Protein Quality, Amino Acid Score & Complete Micronutrient Profiler (USDA Laboratory Dataset)")
 
 # Налаштування профілю
 with st.expander("⚙️ Your Profile & Targets", expanded=False):
@@ -134,14 +132,6 @@ if "search_key_id" not in st.session_state:
 # 1. Пошук продуктів
 st.subheader("1. Search & Add Food")
 
-# Фільтр вибору бази даних
-db_choice = st.radio(
-    "Select Database Source:",
-    options=["All Sources", "🇬🇧 CoFID UK Only", "🇺🇸 USDA Legacy Only"],
-    horizontal=True,
-    help="CoFID UK is calibrated for British/Irish food composition, USDA covers a broader range."
-)
-
 search_term = st.text_input(
     "Search food item (e.g., salmon, bread, egg, oats, chickpeas, chicken breast):",
     placeholder="Type food name...",
@@ -156,14 +146,7 @@ if search_term:
         results = []
         
         for row in foods_catalog:
-            fdc_id, name, kcal, prot, fat, carbs, fiber, src_db, q_grade = row
-            
-            # Фільтрація за обраною базою даних
-            if db_choice == "🇬🇧 CoFID UK Only" and src_db != "cofid_uk":
-                continue
-            if db_choice == "🇺🇸 USDA Legacy Only" and src_db != "usda_sr_legacy":
-                continue
-
+            fdc_id, name, kcal, prot, fat, carbs, fiber = row
             name_lower = name.lower()
             
             # Перевірка збігу токенів за межами слів
@@ -202,10 +185,6 @@ if search_term:
                 if any(k in tokens for k in ("skin", "skinless")) and "skin not eaten" in name_lower:
                     score += 100
                 
-                # Додатковий пріоритет CoFID UK при загальному пошуку
-                if src_db == "cofid_uk":
-                    score += 40
-                
                 score += min(prot * 0.5, 15)
                 
                 results.append((score, {
@@ -215,9 +194,7 @@ if search_term:
                     "protein": prot,
                     "fat": fat,
                     "carbs": carbs,
-                    "fiber": fiber,
-                    "source_db": src_db,
-                    "quality_grade": q_grade
+                    "fiber": fiber
                 }))
         
         results.sort(key=lambda x: x[0], reverse=True)
@@ -231,17 +208,9 @@ if search_term:
                 prot = item_data.get("protein", 0)
                 fat = item_data.get("fat", 0)
                 carbs = item_data.get("carbs", 0)
-                src = item_data.get("source_db", "usda_sr_legacy")
-                
-                badge_text = "🇬🇧 CoFID UK (Grade A)" if src == "cofid_uk" else "🇺🇸 USDA Legacy"
                 
                 with st.container(border=True):
-                    col_title, col_badge = st.columns([5, 2])
-                    with col_title:
-                        st.markdown(f"**{name}**")
-                    with col_badge:
-                        st.caption(f"`{badge_text}`")
-                        
+                    st.markdown(f"**{name}**")
                     st.caption(f"Per 100g: **{kcal:.0f} kcal** | P: **{prot:.1f}g** | F: **{fat:.1f}g** | C: **{carbs:.1f}g**")
                     
                     c_inp, c_btn = st.columns([2, 1])
@@ -260,7 +229,7 @@ if search_term:
                             st.session_state.search_key_id += 1
                             st.rerun()
         else:
-            st.info(f"No matching foods found in '{db_choice}'.")
+            st.info("No matching foods found.")
 
 # 2. Обраний раціон та аналітика
 if st.session_state.cart:
@@ -271,8 +240,7 @@ if st.session_state.cart:
     for idx, it in enumerate(st.session_state.cart):
         col_item, col_del = st.columns([5, 1])
         with col_item:
-            tag = "🇬🇧" if it.get("source_db") == "cofid_uk" else "🇺🇸"
-            st.write(f"• {tag} **{it['name']}** — {it['grams']}g ({(it['protein'] * it['grams'] / 100):.1f}g protein)")
+            st.write(f"• **{it['name']}** — {it['grams']}g ({(it['protein'] * it['grams'] / 100):.1f}g protein)")
         with col_del:
             if st.button("✕", key=f"del_{idx}", help="Remove item"):
                 item_to_remove = idx
