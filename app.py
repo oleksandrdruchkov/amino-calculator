@@ -93,14 +93,19 @@ client = get_db()
 
 @st.cache_data(ttl=3600)
 def load_food_catalog():
-    # Кешуємо каталог для миттєвого пошуку
-    res = client.execute("SELECT fdc_id, name, calories, protein, fat, carbs, fiber FROM foods")
+    # Завантажуємо продукти разом з метаданими бази
+    res = client.execute("""
+        SELECT fdc_id, name, calories, protein, fat, carbs, fiber,
+               COALESCE(source_db, 'usda_sr_legacy') as source_db,
+               COALESCE(quality_grade, 'B') as quality_grade
+        FROM foods
+    """)
     return res.rows
 
 foods_catalog = load_food_catalog()
 
 st.title("🥗 AminoCalc")
-st.caption("Protein Quality, Amino Acid Score & Complete Micronutrient Profiler (WHO/FAO 2007)")
+st.caption("Protein Quality, Amino Acid Score & Complete Micronutrient Profiler (USDA + CoFID UK)")
 
 # Налаштування профілю
 with st.expander("⚙️ Your Profile & Targets", expanded=False):
@@ -136,7 +141,7 @@ if search_term:
         results = []
         
         for row in foods_catalog:
-            fdc_id, name, kcal, prot, fat, carbs, fiber = row
+            fdc_id, name, kcal, prot, fat, carbs, fiber, src_db, q_grade = row
             name_lower = name.lower()
             
             # Перевірка збігу токенів за межами слів
@@ -175,6 +180,10 @@ if search_term:
                 if any(k in tokens for k in ("skin", "skinless")) and "skin not eaten" in name_lower:
                     score += 100
                 
+                # Пріоритет європейській базі CoFID
+                if src_db == "cofid_uk":
+                    score += 40
+                
                 score += min(prot * 0.5, 15)
                 
                 results.append((score, {
@@ -184,7 +193,9 @@ if search_term:
                     "protein": prot,
                     "fat": fat,
                     "carbs": carbs,
-                    "fiber": fiber
+                    "fiber": fiber,
+                    "source_db": src_db,
+                    "quality_grade": q_grade
                 }))
         
         results.sort(key=lambda x: x[0], reverse=True)
@@ -198,9 +209,17 @@ if search_term:
                 prot = item_data.get("protein", 0)
                 fat = item_data.get("fat", 0)
                 carbs = item_data.get("carbs", 0)
+                src = item_data.get("source_db", "usda_sr_legacy")
+                
+                badge_text = "🇬🇧 CoFID UK (Grade A)" if src == "cofid_uk" else "🇺🇸 USDA Legacy"
                 
                 with st.container(border=True):
-                    st.markdown(f"**{name}**")
+                    col_title, col_badge = st.columns([5, 2])
+                    with col_title:
+                        st.markdown(f"**{name}**")
+                    with col_badge:
+                        st.caption(f"`{badge_text}`")
+                        
                     st.caption(f"Per 100g: **{kcal:.0f} kcal** | P: **{prot:.1f}g** | F: **{fat:.1f}g** | C: **{carbs:.1f}g**")
                     
                     c_inp, c_btn = st.columns([2, 1])
@@ -216,7 +235,6 @@ if search_term:
                             st.session_state.cart.append(item_to_add)
                             st.toast(f"Added {portion}g of {name[:25]}...!")
                             
-                            # Безпечне очищення: змінюємо номер версії віджета, щоб скинути ввід без помилок
                             st.session_state.search_key_id += 1
                             st.rerun()
         else:
@@ -227,12 +245,12 @@ if st.session_state.cart:
     st.divider()
     st.subheader(f"2. Your Meal Plan ({len(st.session_state.cart)} items)")
     
-    # Безпечне видалення без IndexError
     item_to_remove = None
     for idx, it in enumerate(st.session_state.cart):
         col_item, col_del = st.columns([5, 1])
         with col_item:
-            st.write(f"• **{it['name']}** — {it['grams']}g ({(it['protein'] * it['grams'] / 100):.1f}g protein)")
+            tag = "🇬🇧" if it.get("source_db") == "cofid_uk" else "🇺🇸"
+            st.write(f"• {tag} **{it['name']}** — {it['grams']}g ({(it['protein'] * it['grams'] / 100):.1f}g protein)")
         with col_del:
             if st.button("✕", key=f"del_{idx}", help="Remove item"):
                 item_to_remove = idx
@@ -266,14 +284,18 @@ if st.session_state.cart:
         "Valine": sum_nutrient("valine") * 1000
     }
 
+    # Перевірка наявності амінокислот
+    total_aa_mass = sum(aa_totals_mg.values())
+    has_amino_data = total_aa_mass > 0
+
     scores = {}
-    if total_protein > 0:
+    if total_protein > 0 and has_amino_data:
         for aa, ref in WHO_REFERENCE.items():
             mg_per_g_protein = aa_totals_mg[aa] / total_protein
             scores[aa] = round(mg_per_g_protein / ref, 2)
 
     limiting_aa = min(scores, key=scores.get) if scores else "N/A"
-    min_score = scores[limiting_aa] if scores else 1.0
+    min_score = scores[limiting_aa] if scores else (1.0 if not has_amino_data else 0.0)
     pdcaas = min(min_score, 1.0)
     effective_protein = total_protein * pdcaas
 
@@ -283,8 +305,11 @@ if st.session_state.cart:
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Calories", f"{total_cals:.0f} kcal")
     m2.metric("Total Protein", f"{total_protein:.1f} g", f"Target: {target_protein_total:.1f} g")
-    m3.metric("PDCAAS Score", f"{pdcaas * 100:.0f}%", f"Limiting: {limiting_aa}")
-    m4.metric("Usable (Net) Protein", f"{effective_protein:.1f} g")
+    m3.metric("PDCAAS Score", f"{pdcaas * 100:.0f}%" if has_amino_data else "N/A", f"Limiting: {limiting_aa}")
+    m4.metric("Usable (Net) Protein", f"{effective_protein:.1f} g" if has_amino_data else f"{total_protein:.1f} g")
+
+    if not has_amino_data and total_protein > 0:
+        st.warning("⚠️ Обрані продукти містять макронутрієнти, але в них відсутній детальний амінокислотний профіль у базі. PDCAAS не розраховано.")
 
     tab_aa, tab_macros, tab_min, tab_vit, tab_fats = st.tabs([
         "🥩 Protein & Aminos",
@@ -295,26 +320,29 @@ if st.session_state.cart:
     ])
 
     with tab_aa:
-        st.write("##### Amino Acid Profile (% of WHO Requirement):")
-        score_df = pd.DataFrame({
-            "Amino Acid": list(scores.keys()),
-            "Score (%)": [v * 100 for v in scores.values()]
-        }).set_index("Amino Acid")
-        st.bar_chart(score_df)
+        if has_amino_data:
+            st.write("##### Amino Acid Profile (% of WHO Requirement):")
+            score_df = pd.DataFrame({
+                "Amino Acid": list(scores.keys()),
+                "Score (%)": [v * 100 for v in scores.values()]
+            }).set_index("Amino Acid")
+            st.bar_chart(score_df)
 
-        detail_rows = []
-        for aa in WHO_REFERENCE.keys():
-            daily_req = WHO_DAILY_REQ_PER_KG[aa] * body_weight
-            actual_mg = aa_totals_mg[aa]
-            pct = (actual_mg / daily_req) * 100 if daily_req > 0 else 0
-            detail_rows.append({
-                "Amino Acid": aa,
-                "Intake (mg)": int(actual_mg),
-                "Daily Requirement (mg)": int(daily_req),
-                "Requirement Met": f"{pct:.0f}%",
-                "Quality Score": f"{scores.get(aa, 0)*100:.0f}%"
-            })
-        st.dataframe(pd.DataFrame(detail_rows), use_container_width=True)
+            detail_rows = []
+            for aa in WHO_REFERENCE.keys():
+                daily_req = WHO_DAILY_REQ_PER_KG[aa] * body_weight
+                actual_mg = aa_totals_mg[aa]
+                pct = (actual_mg / daily_req) * 100 if daily_req > 0 else 0
+                detail_rows.append({
+                    "Amino Acid": aa,
+                    "Intake (mg)": int(actual_mg),
+                    "Daily Requirement (mg)": int(daily_req),
+                    "Requirement Met": f"{pct:.0f}%",
+                    "Quality Score": f"{scores.get(aa, 0)*100:.0f}%"
+                })
+            st.dataframe(pd.DataFrame(detail_rows), use_container_width=True)
+        else:
+            st.info("No amino acid laboratory data available for the currently selected items.")
 
     with tab_macros:
         c1, c2, c3, c4 = st.columns(4)
