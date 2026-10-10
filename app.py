@@ -93,7 +93,7 @@ client = get_db()
 
 @st.cache_data(ttl=3600)
 def load_food_catalog():
-    # Завантажуємо лише позиції з верифікованим амінокислотним профілем
+    # Фільтруємо на рівні БД: беремо виключно продукти з повним амінокислотним профілем
     res = client.execute("""
         SELECT fdc_id, name, calories, protein, fat, carbs, fiber
         FROM foods
@@ -122,7 +122,7 @@ with st.expander("⚙️ Your Profile & Targets", expanded=False):
     target_protein_total = body_weight * protein_target_per_kg
     st.info(f"🎯 Daily Protein Target: **{target_protein_total:.1f} g** ({protein_target_per_kg} g/kg)")
 
-# Ініціалізація стану сесії
+# Стан сесії
 if "cart" not in st.session_state:
     st.session_state.cart = []
 
@@ -131,7 +131,6 @@ if "search_key_id" not in st.session_state:
 
 # 1. Пошук продуктів
 st.subheader("1. Search & Add Food")
-
 search_term = st.text_input(
     "Search food item (e.g., salmon, bread, egg, oats, chickpeas, chicken breast):",
     placeholder="Type food name...",
@@ -149,7 +148,7 @@ if search_term:
             fdc_id, name, kcal, prot, fat, carbs, fiber = row
             name_lower = name.lower()
             
-            # Перевірка збігу токенів за межами слів
+            # Перевірка збігу всіх токенів за межами слів
             matches_all = True
             for t in tokens:
                 if t in ("skin", "skinless"):
@@ -226,6 +225,7 @@ if search_term:
                             st.session_state.cart.append(item_to_add)
                             st.toast(f"Added {portion}g of {name[:25]}...!")
                             
+                            # Безпечне скидання пошуку зміною ключа
                             st.session_state.search_key_id += 1
                             st.rerun()
         else:
@@ -236,6 +236,7 @@ if st.session_state.cart:
     st.divider()
     st.subheader(f"2. Your Meal Plan ({len(st.session_state.cart)} items)")
     
+    # Видалення позицій без збоїв індексації
     item_to_remove = None
     for idx, it in enumerate(st.session_state.cart):
         col_item, col_del = st.columns([5, 1])
