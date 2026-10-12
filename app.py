@@ -93,7 +93,7 @@ client = get_db()
 
 @st.cache_data(ttl=3600)
 def load_food_catalog():
-    # Фільтруємо на рівні БД: беремо виключно продукти з повним амінокислотним профілем
+    # Фільтруємо на рівні БД: беремо продукти з повним амінокислотним профілем
     res = client.execute("""
         SELECT fdc_id, name, calories, protein, fat, carbs, fiber
         FROM foods
@@ -148,7 +148,6 @@ if search_term:
             fdc_id, name, kcal, prot, fat, carbs, fiber = row
             name_lower = name.lower()
             
-            # Перевірка збігу всіх токенів за межами слів
             matches_all = True
             for t in tokens:
                 if t in ("skin", "skinless"):
@@ -225,7 +224,7 @@ if search_term:
                             st.session_state.cart.append(item_to_add)
                             st.toast(f"Added {portion}g of {name[:25]}...!")
                             
-                            # Безпечне скидання пошуку зміною ключа
+                            # Безпечне скидання пошуку
                             st.session_state.search_key_id += 1
                             st.rerun()
         else:
@@ -236,7 +235,7 @@ if st.session_state.cart:
     st.divider()
     st.subheader(f"2. Your Meal Plan ({len(st.session_state.cart)} items)")
     
-    # Видалення позицій без збоїв індексації
+    # Видалення позицій без IndexError
     item_to_remove = None
     for idx, it in enumerate(st.session_state.cart):
         col_item, col_del = st.columns([5, 1])
@@ -281,22 +280,57 @@ if st.session_state.cart:
             mg_per_g_protein = aa_totals_mg[aa] / total_protein
             scores[aa] = round(mg_per_g_protein / ref, 2)
 
-    limiting_aa = min(scores, key=scores.get) if scores else "N/A"
-    min_score = scores[limiting_aa] if scores else 1.0
-    pdcaas = min(min_score, 1.0)
-    effective_protein = total_protein * pdcaas
+    bottleneck_aa = min(scores, key=scores.get) if scores else "N/A"
+    min_score = scores[bottleneck_aa] if scores else 1.0
+    efficiency = min(min_score, 1.0)
+    
+    # Розрахунок долі білка
+    building_protein = total_protein * efficiency
+    burned_protein = total_protein - building_protein
 
+    st.divider()
+    st.subheader("🥩 Protein Fate: Where Does It Go?")
+
+    col_tot, col_build, col_burn = st.columns(3)
+    col_tot.metric(
+        label="🍽️ Total Protein Eaten",
+        value=f"{total_protein:.1f} g",
+        help="Raw protein consumed across all selected food items."
+    )
+    col_build.metric(
+        label="💪 Body & Muscle Building",
+        value=f"{building_protein:.1f} g",
+        delta=f"{efficiency * 100:.0f}% efficiency",
+        help="Protein available for muscle growth, tissue repair, and organ maintenance."
+    )
+    col_burn.metric(
+        label="🔥 Burned for Calories",
+        value=f"{burned_protein:.1f} g",
+        delta=f"{(1.0 - efficiency) * 100:.0f}% surplus",
+        delta_color="inverse",
+        help="Surplus amino acids lacking balanced counterparts that get oxidized for energy."
+    )
+
+    # Шкала ефективності
+    st.write(f"**Efficiency:** {efficiency * 100:.0f}%")
+    st.progress(efficiency)
+
+    # Пояснення
+    if bottleneck_aa != "N/A" and efficiency < 1.0:
+        st.warning(
+            f"⚠️ **Bottleneck: {bottleneck_aa}** ({scores[bottleneck_aa] * 100:.0f}% of WHO target).\n\n"
+            f"Because this essential amino acid is the lowest, tissue synthesis stops at {efficiency * 100:.0f}%. "
+            f"The remaining **{burned_protein:.1f} g** cannot build tissue and gets burned for calories."
+        )
+    elif total_protein > 0:
+        st.success("✅ **Optimal Balance!** All essential amino acids meet targets — 100% of protein is usable for body building.")
+
+    # 3. Детальна нутриційна аналітика
     st.divider()
     st.subheader("3. Comprehensive Nutrition Analysis")
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Calories", f"{total_cals:.0f} kcal")
-    m2.metric("Total Protein", f"{total_protein:.1f} g", f"Target: {target_protein_total:.1f} g")
-    m3.metric("PDCAAS Score", f"{pdcaas * 100:.0f}%", f"Limiting: {limiting_aa}")
-    m4.metric("Usable (Net) Protein", f"{effective_protein:.1f} g")
-
     tab_aa, tab_macros, tab_min, tab_vit, tab_fats = st.tabs([
-        "🥩 Protein & Aminos",
+        "🥩 Amino Acids",
         "🍞 Macros & Fiber",
         "⚡ Minerals",
         "💊 Vitamins",
@@ -321,13 +355,13 @@ if st.session_state.cart:
                 "Intake (mg)": int(actual_mg),
                 "Daily Requirement (mg)": int(daily_req),
                 "Requirement Met": f"{pct:.0f}%",
-                "Quality Score": f"{scores.get(aa, 0)*100:.0f}%"
+                "Profile Score": f"{scores.get(aa, 0)*100:.0f}%"
             })
         st.dataframe(pd.DataFrame(detail_rows), use_container_width=True)
 
     with tab_macros:
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Protein", f"{total_protein:.1f} g")
+        c1.metric("Calories", f"{total_cals:.0f} kcal")
         c2.metric("Carbohydrates", f"{total_carbs:.1f} g")
         c3.metric("Dietary Fiber", f"{total_fiber:.1f} g", f"{int(total_fiber / DAILY_VALUES['fiber'] * 100)}% RDA")
         c4.metric("Fats", f"{total_fat:.1f} g")
