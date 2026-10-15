@@ -278,3 +278,220 @@ if st.session_state.cart:
         st.markdown(f"""
         <div style="background: rgba(239, 83, 80, 0.15); border-left: 4px solid #ef5350; padding: 12px 14px; border-radius: 6px; margin: 12px 0;">
             <b style="color: #ef5350; font-size: 1.0rem;">Deficit in {limiting_aa} ({min_score * 100:.0f}% of WHO target)</b><br>
+            <span style="opacity: 0.9; font-size: 0.88rem;">
+                Body protein synthesis is capped at <b>{min_score * 100:.0f}%</b> by Liebig's Law. 
+                Remaining <b>{fuel_protein:.1f} g</b> of protein is oxidized for energy.
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ---------------------------------------------------------
+        # TOP 5 DIVERSE FOOD RECOMMENDATIONS TO FIX DEFICIT
+        # ---------------------------------------------------------
+        with st.container(border=True):
+            st.markdown(f"💡 **Top 5 Diverse Food Sources High in {limiting_aa}**")
+            st.caption("Pick from different food groups to balance your meal:")
+
+            # Map amino acid to catalog indices
+            col_pos_map = {
+                "Histidine": [8],
+                "Isoleucine": [9],
+                "Leucine": [10],
+                "Lysine": [11],
+                "Met + Cys": [12, 13],
+                "Phe + Tyr": [14, 15],
+                "Threonine": [16],
+                "Tryptophan": [17],
+                "Valine": [18]
+            }
+            indices = col_pos_map.get(limiting_aa, [11])
+
+            def get_target_aa_amount(row):
+                return sum(row[idx] or 0.0 for idx in indices)
+
+            # Heuristic food grouping logic
+            def get_food_category(name):
+                n = name.lower()
+                if any(k in n for k in ["soy", "tofu", "bean", "lentil", "chickpea", "pea", "edamame", "lupin", "tempeh", "miso"]):
+                    return "🌱 Legumes & Soy"
+                elif any(k in n for k in ["fish", "salmon", "tuna", "cod", "shrimp", "crab", "mackerel", "sardine", "seafood"]):
+                    return "🐟 Fish & Seafood"
+                elif any(k in n for k in ["milk", "cheese", "yogurt", "egg", "curd", "whey", "casein"]):
+                    return "🧀 Dairy & Eggs"
+                elif any(k in n for k in ["chicken", "turkey", "beef", "pork", "meat", "lamb", "duck", "veal"]):
+                    return "🥩 Meat & Poultry"
+                elif any(k in n for k in ["seed", "nut", "almond", "peanut", "walnut", "sesame", "chia", "cashew", "pumpkin"]):
+                    return "🥜 Seeds & Nuts"
+                return "🌾 Other Sources"
+
+            sorted_candidates = sorted(active_catalog, key=get_target_aa_amount, reverse=True)
+
+            # Pick champion from each group
+            diversified_picks = {}
+            for item in sorted_candidates:
+                cat = get_food_category(item[1])
+                if cat not in diversified_picks and get_target_aa_amount(item) > 0:
+                    diversified_picks[cat] = item
+                if len(diversified_picks) >= 5:
+                    break
+
+            for cat_label, cand in diversified_picks.items():
+                c_id, c_name, c_kcal, c_prot, c_fat, c_carbs, c_fib, c_src = cand[:8]
+                aa_val_g = get_target_aa_amount(cand)
+                
+                rec_col1, rec_col2 = st.columns([4, 1])
+                with rec_col1:
+                    st.write(f"**{cat_label}**: {c_name[:40]}")
+                    st.caption(f"⭐ **{aa_val_g:.2f}g {limiting_aa}** | {c_prot:.1f}g Protein | {c_kcal:.0f} kcal (per 100g)")
+                with rec_col2:
+                    if st.button("➕ 100g", key=f"rec_add_{c_id}_{cat_label}"):
+                        full_row = client.execute("SELECT * FROM foods WHERE fdc_id = ?", [c_id]).rows[0]
+                        col_names = [c[1] for c in client.execute("PRAGMA table_info(foods)").rows]
+                        item_dict = dict(zip(col_names, full_row))
+                        item_dict["grams"] = 100
+                        st.session_state.cart.append(item_dict)
+                        st.toast(f"Added 100g of {c_name[:20]}!")
+                        st.rerun()
+    else:
+        st.markdown("""
+        <div style="background: rgba(76, 175, 80, 0.15); border-left: 4px solid #4caf50; padding: 12px 14px; border-radius: 6px; margin: 12px 0;">
+            <b style="color: #4caf50; font-size: 1.0rem;">Complete Amino Acid Balance (100%+)</b><br>
+            <span style="opacity: 0.9; font-size: 0.88rem;">All essential amino acids meet WHO standards. Full protein utilization achieved.</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ---------------------------------------------------------
+    # 7. TABS (COMPACT COLORED INDICATORS)
+    # ---------------------------------------------------------
+    tab_aa, tab_macros, tab_min, tab_vit, tab_fats = st.tabs([
+        "🥩 Aminos",
+        "🍞 Macros",
+        "⚡ Minerals",
+        "💊 Vitamins",
+        "🥑 Lipids"
+    ])
+
+    with tab_aa:
+        aa_data = []
+        for aa in WHO_REFERENCE.keys():
+            daily_req = WHO_DAILY_REQ_PER_KG[aa] * body_weight
+            actual_mg = aa_totals_mg[aa]
+            req_met = (actual_mg / daily_req) * 100 if daily_req > 0 else 0
+            score_pct = scores.get(aa, 0) * 100
+
+            if aa == limiting_aa and min_score < 1.0:
+                dot = "🔴"
+            elif score_pct < 100.0:
+                dot = "🟡"
+            else:
+                dot = "🟢"
+
+            aa_data.append({
+                "": dot,
+                "Amino Acid": aa,
+                "Intake": f"{actual_mg / 1000:.2f}g",
+                "Req": f"{daily_req / 1000:.2f}g",
+                "Met": f"{req_met:.0f}%",
+                "Score": f"{score_pct:.0f}%"
+            })
+
+        st.dataframe(
+            pd.DataFrame(aa_data),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "": st.column_config.TextColumn(width="small"),
+                "Amino Acid": st.column_config.TextColumn(width="medium")
+            }
+        )
+
+        st.caption("🔴 Limiting Deficit | 🟡 Suboptimal (<100%) | 🟢 Sufficient")
+
+        score_df = pd.DataFrame({
+            "Amino Acid": list(scores.keys()),
+            "Score (%)": [v * 100 for v in scores.values()]
+        }).set_index("Amino Acid")
+        st.bar_chart(score_df)
+
+    with tab_macros:
+        mc1, mc2 = st.columns(2)
+        with mc1:
+            st.metric("Calories", f"{total_cals:.0f} kcal")
+            st.metric("Total Fat", f"{total_fat:.1f} g")
+        with mc2:
+            st.metric("Carbohydrates", f"{total_carbs:.1f} g")
+            st.metric("Dietary Fiber", f"{total_fiber:.1f} g", f"{min(total_fiber / DAILY_VALUES['fiber'] * 100, 100):.0f}% RDA")
+
+    with tab_min:
+        minerals_data = [
+            ("Calcium", "calcium", "mg"),
+            ("Iron", "iron", "mg"),
+            ("Magnesium", "magnesium", "mg"),
+            ("Phosphorus", "phosphorus", "mg"),
+            ("Potassium", "potassium", "mg"),
+            ("Sodium", "sodium", "mg"),
+            ("Zinc", "zinc", "mg"),
+            ("Copper", "copper", "mg"),
+            ("Selenium", "selenium", "mcg")
+        ]
+        m_rows = []
+        for label, key, unit in minerals_data:
+            val = sum_nutrient(key)
+            target = DAILY_VALUES[key]
+            pct = val / target * 100
+            dot = "🟢" if pct >= 100 else ("🟡" if pct >= 70 else "🔴")
+            m_rows.append({
+                "": dot,
+                "Mineral": label,
+                "Intake": f"{val:.1f} {unit}",
+                "Target": f"{target:.0f} {unit}",
+                "Met": f"{pct:.0f}%"
+            })
+        st.dataframe(pd.DataFrame(m_rows), use_container_width=True, hide_index=True)
+
+    with tab_vit:
+        vitamins_data = [
+            ("Vitamin C", "vitamin_c", "mg"),
+            ("Thiamin (B1)", "thiamin_b1", "mg"),
+            ("Riboflavin (B2)", "riboflavin_b2", "mg"),
+            ("Niacin (B3)", "niacin_b3", "mg"),
+            ("Vitamin B6", "vitamin_b6", "mg"),
+            ("Folate (B9)", "folate_b9", "mcg"),
+            ("Vitamin B12", "vitamin_b12", "mcg"),
+            ("Vitamin A (RAE)", "vitamin_a_rae", "mcg"),
+            ("Vitamin E", "vitamin_e", "mg"),
+            ("Vitamin D", "vitamin_d", "mcg"),
+            ("Vitamin K", "vitamin_k", "mcg")
+        ]
+        v_rows = []
+        for label, key, unit in vitamins_data:
+            val = sum_nutrient(key)
+            target = DAILY_VALUES[key]
+            pct = val / target * 100
+            dot = "🟢" if pct >= 100 else ("🟡" if pct >= 70 else "🔴")
+            v_rows.append({
+                "": dot,
+                "Vitamin": label,
+                "Intake": f"{val:.1f} {unit}",
+                "Target": f"{target:.0f} {unit}",
+                "Met": f"{pct:.0f}%"
+            })
+        st.dataframe(pd.DataFrame(v_rows), use_container_width=True, hide_index=True)
+
+    with tab_fats:
+        sat = sum_nutrient("fat_saturated")
+        mono = sum_nutrient("fat_monounsaturated")
+        poly = sum_nutrient("fat_polyunsaturated")
+        chol = sum_nutrient("cholesterol")
+
+        st.write(f"- Saturated: **{sat:.1f} g**")
+        st.write(f"- Monounsaturated: **{mono:.1f} g**")
+        st.write(f"- Polyunsaturated: **{poly:.1f} g**")
+        st.write(f"- Cholesterol: **{chol:.0f} mg**")
+
+        if (sat + mono + poly) > 0:
+            fat_df = pd.DataFrame({
+                "Fat Type": ["SFA", "MUFA", "PUFA"],
+                "Grams": [sat, mono, poly]
+            }).set_index("Fat Type")
+            st.bar_chart(fat_df)
