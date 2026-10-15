@@ -3,7 +3,7 @@ import libsql_client
 import pandas as pd
 
 # ---------------------------------------------------------
-# 1. PAGE CONFIGURATION & MOBILE-FIRST STYLES
+# 1. PAGE CONFIGURATION & ADAPTIVE THEME STYLES
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="AminoCalc",
@@ -12,7 +12,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS for compact mobile screens
+# Adaptive styles: compatible with both Dark and Light modes
 st.markdown("""
 <style>
     .block-container { 
@@ -21,18 +21,20 @@ st.markdown("""
         padding-left: 0.8rem !important; 
         padding-right: 0.8rem !important; 
     }
+    /* Adaptive metrics cards without white-glare in dark mode */
     div[data-testid="stMetric"] { 
-        background-color: #f8f9fa; 
-        border-radius: 8px; 
-        padding: 8px 12px; 
-        border: 1px solid #e9ecef; 
-        margin-bottom: 6px;
+        background: rgba(125, 125, 125, 0.08) !important; 
+        border-radius: 8px !important; 
+        padding: 10px 14px !important; 
+        border: 1px solid rgba(125, 125, 125, 0.2) !important; 
+        margin-bottom: 8px !important;
     }
     div[data-testid="stMetricValue"] { 
-        font-size: 1.3rem !important; 
+        font-size: 1.35rem !important; 
     }
     div[data-testid="stMetricLabel"] { 
-        font-size: 0.8rem !important; 
+        font-size: 0.85rem !important; 
+        opacity: 0.85;
     }
     .stButton button { 
         width: 100% !important; 
@@ -54,6 +56,19 @@ WHO_REFERENCE = {
     "Valine": 39.0
 }
 
+# Mapping of composite WHO pairs to DB column names
+AA_COL_MAP = {
+    "Histidine": ["histidine"],
+    "Isoleucine": ["isoleucine"],
+    "Leucine": ["leucine"],
+    "Lysine": ["lysine"],
+    "Met + Cys": ["methionine", "cystine"],
+    "Phe + Tyr": ["phenylalanine", "tyrosine"],
+    "Threonine": ["threonine"],
+    "Tryptophan": ["tryptophan"],
+    "Valine": ["valine"]
+}
+
 # Daily requirement per 1 kg body weight (mg/kg/day)
 WHO_DAILY_REQ_PER_KG = {
     "Histidine": 10.0,
@@ -67,7 +82,6 @@ WHO_DAILY_REQ_PER_KG = {
     "Valine": 26.0
 }
 
-# Reference Daily Values (RDA / DV)
 DAILY_VALUES = {
     "calcium": 1000.0, "iron": 14.0, "magnesium": 400.0, "phosphorus": 700.0,
     "potassium": 3500.0, "sodium": 2000.0, "zinc": 11.0, "copper": 0.9, "selenium": 55.0,
@@ -77,7 +91,7 @@ DAILY_VALUES = {
 }
 
 # ---------------------------------------------------------
-# 2. DATABASE CONNECTION & DATA CACHING
+# 2. DATABASE CONNECTION & CACHING
 # ---------------------------------------------------------
 @st.cache_resource
 def get_db():
@@ -92,7 +106,9 @@ client = get_db()
 def load_food_catalog():
     res = client.execute("""
         SELECT fdc_id, name, calories, protein, fat, carbs, fiber,
-               COALESCE(source_db, 'usda_sr_legacy') AS source_db
+               COALESCE(source_db, 'usda_sr_legacy') AS source_db,
+               histidine, isoleucine, leucine, lysine, methionine, cystine,
+               phenylalanine, tyrosine, threonine, tryptophan, valine
         FROM foods 
         WHERE (
             COALESCE(histidine, 0) + COALESCE(isoleucine, 0) + COALESCE(leucine, 0) + 
@@ -125,7 +141,7 @@ if "cart" not in st.session_state:
     st.session_state.cart = []
 
 # ---------------------------------------------------------
-# 4. FAST FOOD SEARCH (OPTION A: SELECTBOX AUTOCOMPLETE)
+# 4. FAST FOOD SEARCH
 # ---------------------------------------------------------
 st.subheader("1. Add Food Item")
 
@@ -160,7 +176,7 @@ flag_map = {
 
 food_options = {}
 for r in active_catalog:
-    fdc_id, name, kcal, prot, fat, carbs, fiber, src_db = r
+    fdc_id, name, kcal, prot, fat, carbs, fiber, src_db = r[:8]
     flag = flag_map.get(src_db, "📍")
     label = f"{flag} {name} ({kcal:.0f} kcal | P: {prot:.1f}g)"
     food_options[label] = r
@@ -175,7 +191,7 @@ with col_select:
 
 if selected_food_label and selected_food_label in food_options:
     selected_item = food_options[selected_food_label]
-    fdc_id, name, kcal, prot, fat, carbs, fiber, src_db = selected_item
+    fdc_id, name, kcal, prot, fat, carbs, fiber, src_db = selected_item[:8]
 
     with st.container(border=True):
         st.markdown(f"**{name}**")
@@ -196,7 +212,7 @@ if selected_food_label and selected_food_label in food_options:
                 st.rerun()
 
 # ---------------------------------------------------------
-# 5. MEAL PLAN & SUMMARY
+# 5. MEAL PLAN & CALCULATIONS
 # ---------------------------------------------------------
 if st.session_state.cart:
     st.divider()
@@ -253,12 +269,12 @@ if st.session_state.cart:
     fuel_protein = total_protein - building_protein
 
     # ---------------------------------------------------------
-    # 6. MOBILE-FRIENDLY METRICS & DEFICIT ALERT
+    # 6. METRICS & DEFICIT ALERT
     # ---------------------------------------------------------
     st.divider()
     st.subheader("3. Protein Utilization")
 
-    # 2x2 grid for mobile clarity
+    # 2x2 grid with adaptive styling
     row1_c1, row1_c2 = st.columns(2)
     with row1_c1:
         st.metric("Total Protein", f"{total_protein:.1f} g", f"Target: {target_protein_total:.1f} g")
@@ -271,18 +287,68 @@ if st.session_state.cart:
     with row2_c2:
         st.metric("Oxidized / Fuel", f"{fuel_protein:.1f} g", f"{(1 - usable_ratio) * 100:.0f}% excess", delta_color="inverse")
 
+    # Dark-mode safe alert banners
     if usable_ratio < 1.0:
         st.markdown(f"""
-        <div style="background-color: #ffebee; border-left: 4px solid #d32f2f; padding: 10px 12px; border-radius: 4px; margin: 10px 0;">
-            <b style="color: #b71c1c;">Deficit in {limiting_aa} ({min_score * 100:.0f}% of WHO target)</b><br>
-            <span style="color: #37474f; font-size: 0.85rem;">Tissue synthesis capped at {min_score * 100:.0f}%. Remaining <b>{fuel_protein:.1f} g</b> of protein is oxidized for energy.</span>
+        <div style="background: rgba(239, 83, 80, 0.15); border-left: 4px solid #ef5350; padding: 12px 14px; border-radius: 6px; margin: 12px 0;">
+            <b style="color: #ef5350; font-size: 1.0rem;">Deficit in {limiting_aa} ({min_score * 100:.0f}% of WHO target)</b><br>
+            <span style="opacity: 0.9; font-size: 0.88rem;">
+                Body protein synthesis is capped at <b>{min_score * 100:.0f}%</b> by Liebig's Law. 
+                Remaining <b>{fuel_protein:.1f} g</b> of protein is oxidized for energy.
+            </span>
         </div>
         """, unsafe_allow_html=True)
+
+        # ---------------------------------------------------------
+        # TOP 5 FOOD RECOMMENDATIONS TO BALANCE LIMITING AMINO ACID
+        # ---------------------------------------------------------
+        with st.container(border=True):
+            st.markdown(f"💡 **Top 5 Foods High in {limiting_aa} to Fix Deficit**")
+            
+            # Map amino acid to relevant column indices in catalog
+            # r schema: 0:fdc_id, 1:name, 2:kcal, 3:prot, 4:fat, 5:carbs, 6:fiber, 7:src_db,
+            # 8:his, 9:ile, 10:leu, 11:lys, 12:met, 13:cys, 14:phe, 15:tyr, 16:thr, 17:trp, 18:val
+            col_pos_map = {
+                "Histidine": [8],
+                "Isoleucine": [9],
+                "Leucine": [10],
+                "Lysine": [11],
+                "Met + Cys": [12, 13],
+                "Phe + Tyr": [14, 15],
+                "Threonine": [16],
+                "Tryptophan": [17],
+                "Valine": [18]
+            }
+            indices = col_pos_map.get(limiting_aa, [11])
+
+            def get_target_aa_amount(row):
+                return sum(row[idx] or 0.0 for idx in indices)
+
+            # Sort catalog by target amino acid density per 100g
+            sorted_by_aa = sorted(active_catalog, key=get_target_aa_amount, reverse=True)[:5]
+
+            for s_idx, cand in enumerate(sorted_by_aa):
+                c_id, c_name, c_kcal, c_prot, c_fat, c_carbs, c_fib, c_src = cand[:8]
+                aa_val_g = get_target_aa_amount(cand)
+                
+                rec_col1, rec_col2 = st.columns([4, 1])
+                with rec_col1:
+                    st.write(f"**{c_name[:45]}**")
+                    st.caption(f"⭐ **{aa_val_g:.2f}g {limiting_aa}** | {c_prot:.1f}g Protein | {c_kcal:.0f} kcal (per 100g)")
+                with rec_col2:
+                    if st.button("➕ 100g", key=f"rec_add_{c_id}_{s_idx}"):
+                        full_row = client.execute("SELECT * FROM foods WHERE fdc_id = ?", [c_id]).rows[0]
+                        col_names = [c[1] for c in client.execute("PRAGMA table_info(foods)").rows]
+                        item_dict = dict(zip(col_names, full_row))
+                        item_dict["grams"] = 100
+                        st.session_state.cart.append(item_dict)
+                        st.toast(f"Added 100g of {c_name[:20]}!")
+                        st.rerun()
     else:
         st.markdown("""
-        <div style="background-color: #e8f5e9; border-left: 4px solid #2e7d32; padding: 10px 12px; border-radius: 4px; margin: 10px 0;">
-            <b style="color: #1b5e20;">Complete Amino Acid Balance (100%+)</b><br>
-            <span style="color: #37474f; font-size: 0.85rem;">All essential amino acids meet WHO standards. Full protein utilization achieved.</span>
+        <div style="background: rgba(76, 175, 80, 0.15); border-left: 4px solid #4caf50; padding: 12px 14px; border-radius: 6px; margin: 12px 0;">
+            <b style="color: #4caf50; font-size: 1.0rem;">Complete Amino Acid Balance (100%+)</b><br>
+            <span style="opacity: 0.9; font-size: 0.88rem;">All essential amino acids meet WHO standards. Full protein utilization achieved.</span>
         </div>
         """, unsafe_allow_html=True)
 
@@ -298,7 +364,6 @@ if st.session_state.cart:
     ])
 
     with tab_aa:
-        # Minimalist table: Clean indicator without text label
         aa_data = []
         for aa in WHO_REFERENCE.keys():
             daily_req = WHO_DAILY_REQ_PER_KG[aa] * body_weight
@@ -306,7 +371,6 @@ if st.session_state.cart:
             req_met = (actual_mg / daily_req) * 100 if daily_req > 0 else 0
             score_pct = scores.get(aa, 0) * 100
 
-            # Single compact color dot indicator
             if aa == limiting_aa and min_score < 1.0:
                 dot = "🔴"
             elif score_pct < 100.0:
