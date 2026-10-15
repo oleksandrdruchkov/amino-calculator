@@ -12,7 +12,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Adaptive CSS for Dark/Light mode and smartphone screens
+# Adaptive CSS for Dark/Light mode and mobile responsiveness
 st.markdown("""
 <style>
     .block-container { 
@@ -55,7 +55,7 @@ WHO_REFERENCE = {
     "Valine": 39.0
 }
 
-# Daily requirement per 1 kg body weight (mg/kg/day)
+# Daily requirement per 1 kg body weight (mg/kg/day, WHO/FAO 2007)
 WHO_DAILY_REQ_PER_KG = {
     "Histidine": 10.0,
     "Isoleucine": 20.0,
@@ -292,7 +292,6 @@ if st.session_state.cart:
             st.markdown(f"💡 **Top 5 Diverse Food Sources High in {limiting_aa}**")
             st.caption("Pick from different food groups to balance your meal:")
 
-            # Map amino acid to catalog indices
             col_pos_map = {
                 "Histidine": [8],
                 "Isoleucine": [9],
@@ -309,7 +308,6 @@ if st.session_state.cart:
             def get_target_aa_amount(row):
                 return sum(row[idx] or 0.0 for idx in indices)
 
-            # Heuristic food grouping logic
             def get_food_category(name):
                 n = name.lower()
                 if any(k in n for k in ["soy", "tofu", "bean", "lentil", "chickpea", "pea", "edamame", "lupin", "tempeh", "miso"]):
@@ -326,7 +324,6 @@ if st.session_state.cart:
 
             sorted_candidates = sorted(active_catalog, key=get_target_aa_amount, reverse=True)
 
-            # Pick champion from each group
             diversified_picks = {}
             for item in sorted_candidates:
                 cat = get_food_category(item[1])
@@ -361,7 +358,7 @@ if st.session_state.cart:
         """, unsafe_allow_html=True)
 
     # ---------------------------------------------------------
-    # 7. TABS (COMPACT COLORED INDICATORS)
+    # 7. TABS WITH INDIVIDUAL BODY WEIGHT TARGETS
     # ---------------------------------------------------------
     tab_aa, tab_macros, tab_min, tab_vit, tab_fats = st.tabs([
         "🥩 Aminos",
@@ -372,16 +369,18 @@ if st.session_state.cart:
     ])
 
     with tab_aa:
+        st.markdown(f"##### Daily Amino Acid Targets (Tailored for **{body_weight:.1f} kg** Body Weight):")
+        
         aa_data = []
         for aa in WHO_REFERENCE.keys():
-            daily_req = WHO_DAILY_REQ_PER_KG[aa] * body_weight
+            daily_req_mg = WHO_DAILY_REQ_PER_KG[aa] * body_weight
             actual_mg = aa_totals_mg[aa]
-            req_met = (actual_mg / daily_req) * 100 if daily_req > 0 else 0
+            req_met_pct = (actual_mg / daily_req_mg) * 100 if daily_req_mg > 0 else 0
             score_pct = scores.get(aa, 0) * 100
 
             if aa == limiting_aa and min_score < 1.0:
                 dot = "🔴"
-            elif score_pct < 100.0:
+            elif req_met_pct < 100.0 or score_pct < 100.0:
                 dot = "🟡"
             else:
                 dot = "🟢"
@@ -389,10 +388,10 @@ if st.session_state.cart:
             aa_data.append({
                 "": dot,
                 "Amino Acid": aa,
-                "Intake": f"{actual_mg / 1000:.2f}g",
-                "Req": f"{daily_req / 1000:.2f}g",
-                "Met": f"{req_met:.0f}%",
-                "Score": f"{score_pct:.0f}%"
+                "Intake (g)": f"{actual_mg / 1000:.2f}g",
+                "Daily Target (g)": f"{daily_req_mg / 1000:.2f}g",
+                "Daily Met (%)": f"{req_met_pct:.0f}%",
+                "Protein Quality Score": f"{score_pct:.0f}%"
             })
 
         st.dataframe(
@@ -401,17 +400,25 @@ if st.session_state.cart:
             hide_index=True,
             column_config={
                 "": st.column_config.TextColumn(width="small"),
-                "Amino Acid": st.column_config.TextColumn(width="medium")
+                "Amino Acid": st.column_config.TextColumn(width="medium"),
+                "Intake (g)": st.column_config.TextColumn(width="small"),
+                "Daily Target (g)": st.column_config.TextColumn(width="medium"),
+                "Daily Met (%)": st.column_config.TextColumn(width="small"),
+                "Protein Quality Score": st.column_config.TextColumn(width="medium")
             }
         )
 
         st.caption("🔴 Limiting Deficit | 🟡 Suboptimal (<100%) | 🟢 Sufficient")
 
-        score_df = pd.DataFrame({
-            "Amino Acid": list(scores.keys()),
-            "Score (%)": [v * 100 for v in scores.values()]
+        st.write("##### Daily Requirement Coverage (% of target):")
+        req_chart_df = pd.DataFrame({
+            "Amino Acid": list(WHO_REFERENCE.keys()),
+            "Coverage (%)": [
+                (aa_totals_mg[aa] / (WHO_DAILY_REQ_PER_KG[aa] * body_weight)) * 100 
+                for aa in WHO_REFERENCE.keys()
+            ]
         }).set_index("Amino Acid")
-        st.bar_chart(score_df)
+        st.bar_chart(req_chart_df)
 
     with tab_macros:
         mc1, mc2 = st.columns(2)
