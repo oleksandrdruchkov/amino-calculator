@@ -180,7 +180,10 @@ with rel_col1:
       "🔬 Data Reliability / Verification Level:",
       options=["all", "standard", "lab_only"],
       format_func=lambda x: {
-          "all": "🌐 All Data (Lab + Standard + Estimated / 17,600+ items)",
+          "all": (
+              f"🌐 All Data (Lab + Standard + Estimated /"
+              f" {len(foods_catalog):,} items)"
+          ),
           "standard": (
               "🟡 Standard Reference & Lab (Grade A & B / Exclude pure recipes)"
           ),
@@ -210,8 +213,9 @@ with rel_col2:
     )
   else:
     st.caption(
-        "ℹ️ **All Levels**: Complete worldwide coverage (17,614 items) including"
-        " prepared dishes and traditional bakery."
+        f"ℹ️ **All Levels**: Complete worldwide coverage"
+        f" ({len(foods_catalog):,} items) including prepared dishes and"
+        " traditional bakery."
     )
 
 # Фільтрація каталогу за грейдом
