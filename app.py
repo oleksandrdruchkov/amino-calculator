@@ -1,3 +1,24 @@
+"""
+AminoCalc - переглянута версія для порівняння з оригіналом.
+
+Усі змінені місця позначені коментарями [FIX-n]:
+  FIX-1  NULL-безпечні суми + охоплення даних («no data» замість хибного 0)
+  FIX-2  У каталог потрапляють лише продукти з повним набором 11 амінокислот
+  FIX-3  Рекомендації: ранжування за мг/г білка, відсікання аномалій і малобілкових
+  FIX-4  Категорії за цілими словами (regex), а не за підрядком
+  FIX-5  Нейтральні підписи грейдів, без вигаданих 'B' / 'usda_sr_legacy' за замовчуванням
+  FIX-6  Засвоєння: показуємо і чистий AAS, і скор зі засвоєнням (зважене за білком)
+  FIX-7  «Fuel» подано як модельну оцінку
+  FIX-8  Нульовий білок не дає «зеленого» балансу
+  FIX-9  Натрій як ліміт, а не ціль
+  FIX-10 Один запит замість SELECT * + PRAGMA на кожне додавання
+  FIX-11 Каталог як словники, ключі за fdc_id (без колізій міток)
+  FIX-12 try/except навколо бази, пошук текстом замість selectbox на ~17 000 позицій
+  FIX-13 Застереження, підпис еталонного профілю, мінімальна порція 1 г
+"""
+
+import re
+
 import libsql_client
 import pandas as pd
 import streamlit as st
@@ -12,40 +33,31 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Адаптивний CSS: темна/світла теми та оптимізація для смартфонів
 st.markdown(
     """
 <style>
-    .block-container { 
-        padding-top: 1.0rem !important; 
-        padding-bottom: 2.0rem !important; 
-        padding-left: 0.8rem !important; 
-        padding-right: 0.8rem !important; 
+    .block-container {
+        padding-top: 1.0rem !important;
+        padding-bottom: 2.0rem !important;
+        padding-left: 0.8rem !important;
+        padding-right: 0.8rem !important;
     }
-    div[data-testid="stMetric"] { 
-        background: rgba(125, 125, 125, 0.08) !important; 
-        border-radius: 8px !important; 
-        padding: 10px 14px !important; 
-        border: 1px solid rgba(125, 125, 125, 0.2) !important; 
+    div[data-testid="stMetric"] {
+        background: rgba(125, 125, 125, 0.08) !important;
+        border-radius: 8px !important;
+        padding: 10px 14px !important;
+        border: 1px solid rgba(125, 125, 125, 0.2) !important;
         margin-bottom: 8px !important;
     }
-    div[data-testid="stMetricValue"] { 
-        font-size: 1.35rem !important; 
-    }
-    div[data-testid="stMetricLabel"] { 
-        font-size: 0.85rem !important; 
-        opacity: 0.85;
-    }
-    .stButton button { 
-        width: 100% !important; 
-        border-radius: 6px !important; 
-    }
+    div[data-testid="stMetricValue"] { font-size: 1.35rem !important; }
+    div[data-testid="stMetricLabel"] { font-size: 0.85rem !important; opacity: 0.85; }
+    .stButton button { width: 100% !important; border-radius: 6px !important; }
 </style>
 """,
     unsafe_allow_html=True,
 )
 
-# Еталонний амінокислотний профіль ВООЗ/ФАО 2007 (мг на 1 г білка)
+# Еталонний амінокислотний профіль ВООЗ/ФАО 2007, дорослі (мг на 1 г білка)
 WHO_REFERENCE = {
     "Histidine": 15.0,
     "Isoleucine": 30.0,
@@ -58,7 +70,7 @@ WHO_REFERENCE = {
     "Valine": 39.0,
 }
 
-# Добова потреба на 1 кг маси тіла (мг/кг/день, WHO/FAO 2007)
+# Добова потреба (мг/кг/день, WHO/FAO 2007)
 WHO_DAILY_REQ_PER_KG = {
     "Histidine": 10.0,
     "Isoleucine": 20.0,
@@ -71,7 +83,21 @@ WHO_DAILY_REQ_PER_KG = {
     "Valine": 26.0,
 }
 
-# Орієнтовні добові норми мікронутрієнтів (RDA / DV)
+# Які колонки БД входять до кожної групи
+AA_GROUP_COLS = {
+    "Histidine": ["histidine"],
+    "Isoleucine": ["isoleucine"],
+    "Leucine": ["leucine"],
+    "Lysine": ["lysine"],
+    "Met + Cys": ["methionine", "cystine"],
+    "Phe + Tyr": ["phenylalanine", "tyrosine"],
+    "Threonine": ["threonine"],
+    "Tryptophan": ["tryptophan"],
+    "Valine": ["valine"],
+}
+AA_COLS = [c for cols in AA_GROUP_COLS.values() for c in cols]  # усі 11
+
+# Орієнтовні добові норми (RDA / DV)
 DAILY_VALUES = {
     "calcium": 1000.0,
     "iron": 14.0,
@@ -95,145 +121,135 @@ DAILY_VALUES = {
     "vitamin_k": 120.0,
     "fiber": 30.0,
 }
+LIMIT_NUTRIENTS = {"sodium"}  # [FIX-9] верхня межа, а не ціль
+
+
+def fmt(value, nd=1, unit=""):
+    """Безпечне форматування: None -> '—'."""
+    return "—" if value is None else f"{value:.{nd}f}{unit}"
 
 
 # ---------------------------------------------------------
-# 2. ПІДКЛЮЧЕННЯ ДО TURSO ТА КЕШУВАННЯ КАТАЛОГУ
+# 2. ПІДКЛЮЧЕННЯ ДО TURSO ТА КАТАЛОГ
 # ---------------------------------------------------------
 @st.cache_resource
 def get_db():
-  return libsql_client.create_client_sync(
-      url=st.secrets["TURSO_DATABASE_URL"],
-      auth_token=st.secrets["TURSO_READONLY_TOKEN"],
-  )
+    return libsql_client.create_client_sync(
+        url=st.secrets["TURSO_DATABASE_URL"],
+        auth_token=st.secrets["TURSO_READONLY_TOKEN"],
+    )
 
 
-client = get_db()
+def db_rows(sql, params=None):
+    """[FIX-10/11] Один виклик, результат одразу у вигляді словників."""
+    res = get_db().execute(sql, params or [])
+    return [dict(zip(res.columns, row)) for row in res.rows]
+
+
+def is_complete(row):
+    """
+    [FIX-2] Продукт придатний для скору, лише якщо відомі всі 11 амінокислот
+    і білок > 0. Нуль = «немає даних» (так експортовано IFCT та частину інших баз).
+    Компроміс: продукти з реальним нулем (наприклад, желатин без триптофану)
+    теж відсіюються.
+    """
+    if not (row.get("protein") or 0) > 0:
+        return False
+    return all((row.get(c) or 0) > 0 for c in AA_COLS)
 
 
 @st.cache_data(ttl=3600)
 def load_food_catalog():
-  # Завантажуємо 20 ключових колонок: метадані, макроси та 11 незамінних/спаринг АК
-  res = client.execute("""
+    rows = db_rows(
+        """
         SELECT fdc_id, name, calories, protein, fat, carbs, fiber,
-               COALESCE(source_db, 'usda_sr_legacy') AS source_db,
-               COALESCE(quality_grade, 'B') AS quality_grade,
+               COALESCE(source_db, 'unknown') AS source_db,        -- [FIX-5]
+               COALESCE(quality_grade, 'unknown') AS quality_grade, -- [FIX-5]
                histidine, isoleucine, leucine, lysine, methionine, cystine,
                phenylalanine, tyrosine, threonine, tryptophan, valine
-        FROM foods 
-        WHERE (
-            COALESCE(histidine, 0) + COALESCE(isoleucine, 0) + COALESCE(leucine, 0) + 
-            COALESCE(lysine, 0) + COALESCE(methionine, 0) + COALESCE(cystine, 0) + 
-            COALESCE(phenylalanine, 0) + COALESCE(tyrosine, 0) + COALESCE(threonine, 0) + 
-            COALESCE(tryptophan, 0) + COALESCE(valine, 0)
-        ) > 0
-    """)
-  return res.rows
+        FROM foods
+        """
+    )
+    total = len(rows)
+    complete = [r for r in rows if is_complete(r)]
+    return complete, total
 
 
-foods_catalog = load_food_catalog()
+def fetch_full_item(fdc_id):
+    rows = db_rows("SELECT * FROM foods WHERE fdc_id = ?", [fdc_id])
+    return rows[0] if rows else None
+
+
+try:  # [FIX-12]
+    foods_catalog, catalog_total = load_food_catalog()
+except Exception as exc:  # noqa: BLE001
+    st.error(f"Could not load the food database: {exc}")
+    st.stop()
 
 # ---------------------------------------------------------
-# 3. ШАПКА ТА НАЛАШТУВАННЯ ПРОФІЛЮ КОРИСТУВАЧА
+# 3. ШАПКА ТА ПРОФІЛЬ
 # ---------------------------------------------------------
 st.title("🥗 AminoCalc")
 st.caption(
-    "Protein Quality, Amino Acid Score & Complete Micronutrient Profiler"
-    " (WHO/FAO 2007) • 7 World Databases"
+    "Amino Acid Score & Micronutrient Profiler • WHO/FAO 2007 adult reference"
+    " pattern (>18 y) • 7 open food composition databases"  # [FIX-13]
 )
 
 with st.expander("⚙️ Your Profile & Targets", expanded=False):
-  col_w, col_p = st.columns(2)
-  with col_w:
-    body_weight = st.number_input(
-        "Body Weight (kg)",
-        min_value=30.0,
-        max_value=200.0,
-        value=75.0,
-        step=0.5,
+    col_w, col_p = st.columns(2)
+    with col_w:
+        body_weight = st.number_input(
+            "Body Weight (kg)", min_value=30.0, max_value=200.0, value=75.0, step=0.5
+        )
+    with col_p:
+        protein_target_per_kg = st.number_input(
+            "Target Protein (g/kg)", min_value=0.8, max_value=3.5, value=1.2, step=0.1
+        )
+    target_protein_total = body_weight * protein_target_per_kg
+    st.info(
+        f"Daily Target: **{target_protein_total:.1f} g** ({protein_target_per_kg} g/kg)"
     )
-  with col_p:
-    protein_target_per_kg = st.number_input(
-        "Target Protein (g/kg)",
-        min_value=0.8,
-        max_value=3.5,
-        value=1.2,
-        step=0.1,
-    )
-
-  target_protein_total = body_weight * protein_target_per_kg
-  st.info(
-      f"Daily Target: **{target_protein_total:.1f} g** ({protein_target_per_kg}"
-      " g/kg)"
-  )
 
 if "cart" not in st.session_state:
-  st.session_state.cart = []
+    st.session_state.cart = []
 
 # ---------------------------------------------------------
-# 4. ФІЛЬТР НАДІЙНОСТІ ДАНИХ (DATA RELIABILITY)
+# 4. ФІЛЬТР ГРЕЙДУ  [FIX-5]
 # ---------------------------------------------------------
-rel_col1, rel_col2 = st.columns([3, 2])
+RELIABILITY_LABELS = {
+    "all": "🌐 All grades (incl. estimated and unknown)",
+    "standard": "🟡 Grades A & B",
+    "lab_only": "🟢 Grade A only",
+}
+selected_reliability = st.radio(
+    "Data quality grade:",
+    options=list(RELIABILITY_LABELS.keys()),
+    format_func=lambda x: RELIABILITY_LABELS[x],
+    index=0,
+    help=(
+        "Grades are assigned in the database and are not re-verified by this app. "
+        "Grade C generally means estimated or imputed values."
+    ),
+)
+st.caption(
+    f"Showing foods with a complete amino acid set: {len(foods_catalog):,} of"
+    f" {catalog_total:,} records."
+)
 
-with rel_col1:
-  selected_reliability = st.radio(
-      "🔬 Data Reliability / Verification Level:",
-      options=["all", "standard", "lab_only"],
-      format_func=lambda x: {
-          "all": (
-              f"🌐 All Data (Lab + Standard + Estimated /"
-              f" {len(foods_catalog):,} items)"
-          ),
-          "standard": (
-              "🟡 Standard Reference & Lab (Grade A & B / Exclude pure recipes)"
-          ),
-          "lab_only": (
-              "🟢 Lab Verified Only (Grade A: HPLC / ISO Direct Assays)"
-          ),
-      }[x],
-      index=0,
-      horizontal=False,
-      help=(
-          "Filter by scientific rigor: Grade A (Direct chromatography assays),"
-          " Grade B (Standard reference tables), Grade C (Recipe/calculated"
-          " estimates)."
-      ),
-  )
-
-with rel_col2:
-  if selected_reliability == "lab_only":
-    st.info(
-        "🔬 **Grade A**: Over 5,000 foods verified by direct HPLC assays (Frida"
-        " DK, KFCT KR, MEXT JP, FAO, IFCT, USDA lab lots)."
-    )
-  elif selected_reliability == "standard":
-    st.info(
-        "📊 **Grade A & B**: Official reference tables + direct laboratory"
-        " assays. Excludes pure commercial recipe estimates."
-    )
-  else:
-    st.caption(
-        f"ℹ️ **All Levels**: Complete worldwide coverage"
-        f" ({len(foods_catalog):,} items) including prepared dishes and"
-        " traditional bakery."
-    )
-
-# Фільтрація каталогу за грейдом
 if selected_reliability == "lab_only":
-  filtered_by_grade = [r for r in foods_catalog if r[8] == "A"]
+    filtered_by_grade = [r for r in foods_catalog if r["quality_grade"] == "A"]
 elif selected_reliability == "standard":
-  filtered_by_grade = [r for r in foods_catalog if r[8] in ("A", "B")]
+    filtered_by_grade = [r for r in foods_catalog if r["quality_grade"] in ("A", "B")]
 else:
-  filtered_by_grade = foods_catalog
+    filtered_by_grade = foods_catalog
 
 # ---------------------------------------------------------
-# 5. ДЖЕРЕЛО БАЗИ ТА ШВИДКИЙ ПОШУК ПРОДУКТУ
+# 5. ВИБІР БАЗИ ТА ПОШУК  [FIX-12]
 # ---------------------------------------------------------
 st.subheader("1. Add Food Item")
 
-# 7 світових джерел у базі Turso
 db_choices = {
-    "all": "🌐 All Sources (7 Databases)",
+    "all": "🌐 All Sources",
     "bls_de_4_0": "🇩🇪 BLS 4.0 (Germany)",
     "usda_sr_legacy": "🇺🇸 USDA Legacy (USA)",
     "kfct_kr": "🇰🇷 KFCT 10.4 (South Korea)",
@@ -242,7 +258,6 @@ db_choices = {
     "ifct_india": "🇮🇳 IFCT 2017 (India)",
     "fao_upulses": "🌐 FAO uPulses (UN FAO)",
 }
-
 flag_map = {
     "bls_de_4_0": "🇩🇪",
     "usda_sr_legacy": "🇺🇸",
@@ -253,494 +268,472 @@ flag_map = {
     "fao_upulses": "🌐",
 }
 
-col_db, col_select = st.columns([1, 2])
-
+col_db, col_query = st.columns([1, 2])
 with col_db:
-  selected_db = st.selectbox(
-      "Source DB:",
-      options=list(db_choices.keys()),
-      format_func=lambda x: db_choices[x],
-  )
+    selected_db = st.selectbox(
+        "Source DB:", options=list(db_choices.keys()), format_func=lambda x: db_choices[x]
+    )
 
 if selected_db == "all":
-  active_catalog = filtered_by_grade
+    active_catalog = filtered_by_grade
 else:
-  active_catalog = [r for r in filtered_by_grade if r[7] == selected_db]
+    active_catalog = [r for r in filtered_by_grade if r["source_db"] == selected_db]
 
-# Формування списку автодоповнення
-food_options = {}
-for r in active_catalog:
-  fdc_id, name, kcal, prot, fat, carbs, fiber, src_db, q_grade = r[:9]
-  flag = flag_map.get(src_db, "📍")
-  grade_badge = f"[{q_grade}]"
-  label = f"{flag} {name} {grade_badge} ({kcal:.0f} kcal | P: {prot:.1f}g)"
-  food_options[label] = r
-
-with col_select:
-  selected_food_label = st.selectbox(
-      "Search food item:",
-      options=[""] + list(food_options.keys()),
-      index=0,
-      placeholder=f"Type to filter among {len(active_catalog):,} available foods...",
-  )
-
-if selected_food_label and selected_food_label in food_options:
-  selected_item = food_options[selected_food_label]
-  fdc_id, name, kcal, prot, fat, carbs, fiber, src_db, q_grade = selected_item[
-      :9
-  ]
-
-  with st.container(border=True):
-    st.markdown(f"**{name}**")
-    st.caption(
-        f"Grade: **{q_grade}** | Source: **{src_db}** | Per 100g: **{kcal:.0f}"
-        f" kcal** | P: **{prot:.1f}g** | F: **{fat:.1f}g** | C: **{carbs:.1f}g**"
+with col_query:
+    query = st.text_input(
+        "Search food item:",
+        placeholder=f"Type part of a name ({len(active_catalog):,} foods available)...",
     )
 
-    c_portion, c_btn = st.columns([2, 1])
-    with c_portion:
-      portion = st.number_input(
-          "Portion (g)",
-          min_value=10,
-          max_value=2000,
-          value=100,
-          step=10,
-          key=f"inp_{fdc_id}",
-      )
-    with c_btn:
-      st.write("")
-      if st.button("➕ Add", key=f"btn_{fdc_id}", use_container_width=True):
-        full_row = client.execute(
-            "SELECT * FROM foods WHERE fdc_id = ?", [fdc_id]
-        ).rows[0]
-        col_names = [
-            c[1] for c in client.execute("PRAGMA table_info(foods)").rows
-        ]
-        item_dict = dict(zip(col_names, full_row))
-        item_dict["grams"] = portion
-        st.session_state.cart.append(item_dict)
-        st.toast(f"Added {portion}g of {name[:25]}...")
+terms = [t for t in query.lower().split() if t]
+matches = (
+    [r for r in active_catalog if all(t in r["name"].lower() for t in terms)][:50]
+    if terms
+    else []
+)
+by_id = {r["fdc_id"]: r for r in matches}  # [FIX-11] ключ = fdc_id
+
+
+def food_label(fdc_id):
+    r = by_id[fdc_id]
+    return (
+        f"{flag_map.get(r['source_db'], '📍')} {r['name']} [{r['quality_grade']}]"
+        f" ({fmt(r['calories'], 0)} kcal | P: {fmt(r['protein'])}g)"
+    )
+
+
+def add_to_cart(fdc_id, grams):
+    item = fetch_full_item(fdc_id)  # [FIX-10]
+    if item is None:
+        st.warning("Food not found in the database.")
+        return
+    item["grams"] = grams
+    item["dig"] = float(item.get("digestibility") or 1.0)  # [FIX-6]
+    st.session_state.cart.append(item)
+    st.toast(f"Added {grams}g of {item['name'][:25]}...")
+    st.rerun()
+
+
+if terms and not matches:
+    st.caption("No foods match this search (or they lack complete amino acid data).")
+elif matches:
+    selected_id = st.selectbox(
+        f"Results (showing up to 50):",
+        options=[None] + list(by_id.keys()),
+        format_func=lambda x: "" if x is None else food_label(x),
+    )
+    if selected_id is not None:
+        sel = by_id[selected_id]
+        with st.container(border=True):
+            st.markdown(f"**{sel['name']}**")
+            st.caption(
+                f"Grade: **{sel['quality_grade']}** | Source: **{sel['source_db']}** |"
+                f" Per 100g: **{fmt(sel['calories'], 0)} kcal** | P:"
+                f" **{fmt(sel['protein'])}g** | F: **{fmt(sel['fat'])}g** | C:"
+                f" **{fmt(sel['carbs'])}g**"
+            )
+            c_portion, c_btn = st.columns([2, 1])
+            with c_portion:
+                portion = st.number_input(  # [FIX-13] мінімум 1 г
+                    "Portion (g)",
+                    min_value=1,
+                    max_value=2000,
+                    value=100,
+                    step=5,
+                    key=f"inp_{selected_id}",
+                )
+            with c_btn:
+                st.write("")
+                if st.button("➕ Add", key=f"btn_{selected_id}", use_container_width=True):
+                    add_to_cart(selected_id, portion)
+
+# ---------------------------------------------------------
+# 6. РАЦІОН ТА РОЗРАХУНКИ
+# ---------------------------------------------------------
+cart = st.session_state.cart
+
+if cart:
+    st.divider()
+    st.subheader(f"2. Current Meal Plan ({len(cart)})")
+
+    item_to_remove = None
+    for idx, it in enumerate(cart):
+        c_it, c_dig, c_del = st.columns([5, 2, 1])
+        with c_it:
+            st.write(
+                f"• **{it['name']}** — {it['grams']}g"
+                f" ({(it.get('protein') or 0) * it['grams'] / 100:.1f}g P)"
+                f" [{it.get('quality_grade') or 'unknown'}]"
+            )
+        with c_dig:  # [FIX-6] ручне перевизначення засвоєння
+            it["dig"] = st.number_input(
+                "Digestibility",
+                min_value=0.3,
+                max_value=1.0,
+                value=float(it.get("dig", 1.0)),
+                step=0.01,
+                key=f"dig_{idx}",
+                help="1.00 = no correction (also used when the database has no value).",
+            )
+        with c_del:
+            if st.button("✕", key=f"del_{idx}", help="Remove"):
+                item_to_remove = idx
+
+    if item_to_remove is not None:
+        cart.pop(item_to_remove)
         st.rerun()
 
-# ---------------------------------------------------------
-# 6. ПОТОЧНИЙ РАЦІОН ТА БІОХІМІЧНІ РОЗРАХУНКИ
-# ---------------------------------------------------------
-if st.session_state.cart:
-  st.divider()
-  st.subheader(f"2. Current Meal Plan ({len(st.session_state.cart)})")
+    if st.button("🗑️ Clear Plan", use_container_width=True):
+        st.session_state.cart = []
+        st.rerun()
 
-  item_to_remove = None
-  for idx, it in enumerate(st.session_state.cart):
-    c_it, c_del = st.columns([5, 1])
-    with c_it:
-      st.write(
-          f"• **{it['name']}** — {it['grams']}g ({(it['protein'] * it['grams'] / 100):.1f}g"
-          f" P) [{it.get('quality_grade', 'B')}]"
-      )
-    with c_del:
-      if st.button("✕", key=f"del_{idx}", help="Remove"):
-        item_to_remove = idx
+    def sum_nutrient(col):
+        """[FIX-1] None трактується як відсутнє, а не падає з TypeError."""
+        return sum((it.get(col) or 0.0) * it["grams"] / 100 for it in cart)
 
-  if item_to_remove is not None:
-    st.session_state.cart.pop(item_to_remove)
-    st.rerun()
+    def coverage(col):
+        """[FIX-1] Скільки продуктів у раціоні мають значення для цієї колонки."""
+        return sum(1 for it in cart if it.get(col) is not None), len(cart)
 
-  if st.button("🗑️ Clear Plan", use_container_width=True):
-    st.session_state.cart = []
-    st.rerun()
+    total_cals = sum_nutrient("calories")
+    total_protein = sum_nutrient("protein")
+    total_fat = sum_nutrient("fat")
+    total_carbs = sum_nutrient("carbs")
+    total_fiber = sum_nutrient("fiber")
 
-  def sum_nutrient(col):
-    return sum(
-        it.get(col, 0) * (it["grams"] / 100) for it in st.session_state.cart
+    aa_totals_mg = {
+        group: sum(sum_nutrient(c) for c in cols) * 1000
+        for group, cols in AA_GROUP_COLS.items()
+    }
+
+    scores = {}
+    if total_protein > 0:
+        for aa, ref in WHO_REFERENCE.items():
+            scores[aa] = round((aa_totals_mg[aa] / total_protein) / ref, 2)
+
+    # [FIX-6] середнє засвоєння, зважене за вкладом кожного продукту в білок
+    weighted_dig = (
+        sum(
+            (it.get("protein") or 0) * it["grams"] / 100 * it.get("dig", 1.0)
+            for it in cart
+        )
+        / total_protein
+        if total_protein > 0
+        else 1.0
     )
 
-  total_cals = sum_nutrient("calories")
-  total_protein = sum_nutrient("protein")
-  total_fat = sum_nutrient("fat")
-  total_carbs = sum_nutrient("carbs")
-  total_fiber = sum_nutrient("fiber")
+    limiting_aa = min(scores, key=scores.get) if scores else "N/A"
+    min_score = scores[limiting_aa] if scores else 0.0
+    aas_ratio = min(min_score, 1.0)
+    adjusted_ratio = aas_ratio * weighted_dig
 
-  aa_totals_mg = {
-      "Histidine": sum_nutrient("histidine") * 1000,
-      "Isoleucine": sum_nutrient("isoleucine") * 1000,
-      "Leucine": sum_nutrient("leucine") * 1000,
-      "Lysine": sum_nutrient("lysine") * 1000,
-      "Met + Cys": (sum_nutrient("methionine") + sum_nutrient("cystine"))
-      * 1000,
-      "Phe + Tyr": (sum_nutrient("phenylalanine") + sum_nutrient("tyrosine"))
-      * 1000,
-      "Threonine": sum_nutrient("threonine") * 1000,
-      "Tryptophan": sum_nutrient("tryptophan") * 1000,
-      "Valine": sum_nutrient("valine") * 1000,
-  }
+    # ---------------------------------------------------------
+    # 7. МЕТРИКИ
+    # ---------------------------------------------------------
+    st.divider()
+    st.subheader("3. Protein Quality")
 
-  scores = {}
-  if total_protein > 0:
-    for aa, ref in WHO_REFERENCE.items():
-      mg_per_g_protein = aa_totals_mg[aa] / total_protein
-      scores[aa] = round(mg_per_g_protein / ref, 2)
-
-  limiting_aa = min(scores, key=scores.get) if scores else "N/A"
-  min_score = scores[limiting_aa] if scores else 1.0
-  usable_ratio = min(min_score, 1.0)
-  building_protein = total_protein * usable_ratio
-  fuel_protein = total_protein - building_protein
-
-  # ---------------------------------------------------------
-  # 7. МЕТРИКИ ТА ДЕФІЦИТНЕ ПОПЕРЕДЖЕННЯ
-  # ---------------------------------------------------------
-  st.divider()
-  st.subheader("3. Protein Utilization")
-
-  row1_c1, row1_c2 = st.columns(2)
-  with row1_c1:
-    st.metric(
-        "Total Protein",
-        f"{total_protein:.1f} g",
-        f"Target: {target_protein_total:.1f} g",
+    use_dig = st.toggle(
+        "Use digestibility-adjusted score for the usable-protein estimate", value=False
     )
-  with row1_c2:
-    st.metric(
-        "AAS Quality",
-        f"{usable_ratio * 100:.0f}%",
-        f"Limiting: {limiting_aa}",
-        delta_color="normal" if usable_ratio >= 1.0 else "inverse",
-    )
+    usable_ratio = adjusted_ratio if use_dig else aas_ratio
+    est_usable = total_protein * usable_ratio
+    est_fuel = total_protein - est_usable  # [FIX-7] модельна оцінка
 
-  row2_c1, row2_c2 = st.columns(2)
-  with row2_c1:
-    st.metric(
-        "Net Usable",
-        f"{building_protein:.1f} g",
-        f"{usable_ratio * 100:.0f}% efficient",
-    )
-  with row2_c2:
-    st.metric(
-        "Oxidized / Fuel",
-        f"{fuel_protein:.1f} g",
-        f"{(1 - usable_ratio) * 100:.0f}% excess",
-        delta_color="inverse",
-    )
+    r1c1, r1c2 = st.columns(2)
+    with r1c1:
+        st.metric(
+            "Total Protein",
+            f"{total_protein:.1f} g",
+            f"Target: {target_protein_total:.1f} g",
+        )
+    with r1c2:
+        st.metric(
+            "Amino Acid Score",
+            f"{aas_ratio * 100:.0f}%",
+            f"Limiting: {limiting_aa}",
+            delta_color="normal" if aas_ratio >= 1.0 else "inverse",
+        )
 
-  if usable_ratio < 1.0:
-    st.markdown(
-        f"""
-        <div style="background: rgba(239, 83, 80, 0.15); border-left: 4px solid #ef5350; padding: 12px 14px; border-radius: 6px; margin: 12px 0;">
-            <b style="color: #ef5350; font-size: 1.0rem;">Deficit in {limiting_aa} ({min_score * 100:.0f}% of WHO target)</b><br>
-            <span style="opacity: 0.9; font-size: 0.88rem;">
-                Body protein synthesis is capped at <b>{min_score * 100:.0f}%</b> by Liebig's Law. 
-                Remaining <b>{fuel_protein:.1f} g</b> of protein is oxidized for energy.
-            </span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    r2c1, r2c2 = st.columns(2)
+    with r2c1:
+        st.metric("Avg. digestibility", f"{weighted_dig * 100:.0f}%", "protein-weighted")
+    with r2c2:
+        st.metric("Digestibility-adjusted score", f"{adjusted_ratio * 100:.0f}%")
 
-    # ТОП-5 диверсифікованих джерел для ліквідації дефіциту
-    with st.container(border=True):
-      st.markdown(
-          f"💡 **Top 5 Diverse Food Sources High in {limiting_aa} to Fix"
-          " Deficit**"
-      )
-      st.caption("Pick from different food groups to balance your meal:")
+    r3c1, r3c2 = st.columns(2)
+    with r3c1:
+        st.metric("Est. usable protein", f"{est_usable:.1f} g")
+    with r3c2:
+        st.metric(
+            "Est. oxidized (model)",
+            f"{est_fuel:.1f} g",
+            "simplified estimate",
+            delta_color="off",
+        )
 
-      # Індекси АК у вибірці (з урахуванням додавання quality_grade на позицію [8])
-      col_pos_map = {
-          "Histidine": [9],
-          "Isoleucine": [10],
-          "Leucine": [11],
-          "Lysine": [12],
-          "Met + Cys": [13, 14],
-          "Phe + Tyr": [15, 16],
-          "Threonine": [17],
-          "Tryptophan": [18],
-          "Valine": [19],
-      }
-      indices = col_pos_map.get(limiting_aa, [12])
+    if total_protein <= 0:  # [FIX-8]
+        st.info("The meal plan contains no protein, so no amino acid score can be computed.")
+    elif aas_ratio < 1.0:
+        st.markdown(
+            f"""
+            <div style="background: rgba(239, 83, 80, 0.15); border-left: 4px solid #ef5350; padding: 12px 14px; border-radius: 6px; margin: 12px 0;">
+                <b style="color: #ef5350; font-size: 1.0rem;">Deficit in {limiting_aa} ({min_score * 100:.0f}% of the reference pattern)</b><br>
+                <span style="opacity: 0.9; font-size: 0.88rem;">
+                    In this simplified model, the limiting amino acid caps protein use at
+                    <b>{min_score * 100:.0f}%</b>; the rest is assumed to be used as energy.
+                </span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-      def get_target_aa_amount(row):
-        return sum(row[idx] or 0.0 for idx in indices)
-
-      def get_food_category(n_str):
-        n = n_str.lower()
-        if any(
-            k in n
-            for k in [
-                "soy",
-                "tofu",
-                "bean",
-                "lentil",
-                "chickpea",
-                "pea",
-                "edamame",
-                "lupin",
-                "tempeh",
-                "miso",
-            ]
-        ):
-          return "🌱 Legumes & Soy"
-        elif any(
-            k in n
-            for k in [
-                "fish",
-                "salmon",
-                "tuna",
-                "cod",
-                "shrimp",
-                "crab",
-                "mackerel",
-                "sardine",
-                "seafood",
-                "algae",
-            ]
-        ):
-          return "🐟 Fish & Seafood"
-        elif any(
-            k in n
-            for k in [
-                "milk",
-                "cheese",
-                "yogurt",
-                "egg",
-                "curd",
-                "whey",
-                "casein",
-            ]
-        ):
-          return "🧀 Dairy & Eggs"
-        elif any(
-            k in n
-            for k in [
-                "chicken",
-                "turkey",
-                "beef",
-                "pork",
-                "meat",
-                "lamb",
-                "duck",
-                "veal",
-            ]
-        ):
-          return "🥩 Meat & Poultry"
-        elif any(
-            k in n
-            for k in [
-                "seed",
-                "nut",
-                "almond",
-                "peanut",
-                "walnut",
-                "sesame",
-                "chia",
-                "cashew",
-                "pumpkin",
-            ]
-        ):
-          return "🥜 Seeds & Nuts"
-        return "🌾 Grains & Other"
-
-      sorted_candidates = sorted(
-          active_catalog, key=get_target_aa_amount, reverse=True
-      )
-
-      diversified_picks = {}
-      for item in sorted_candidates:
-        cat = get_food_category(item[1])
-        if cat not in diversified_picks and get_target_aa_amount(item) > 0:
-          diversified_picks[cat] = item
-        if len(diversified_picks) >= 5:
-          break
-
-      for cat_label, cand in diversified_picks.items():
-        c_id, c_name, c_kcal, c_prot, c_fat, c_carbs, c_fib, c_src, c_gr = cand[
-            :9
-        ]
-        aa_val_g = get_target_aa_amount(cand)
-
-        rec_col1, rec_col2 = st.columns([4, 1])
-        with rec_col1:
-          st.write(f"**{cat_label}**: {c_name[:42]}")
-          st.caption(
-              f"⭐ **{aa_val_g:.2f}g {limiting_aa}** | {c_prot:.1f}g Protein |"
-              f" {c_kcal:.0f} kcal (per 100g)"
-          )
-        with rec_col2:
-          if st.button("➕ 100g", key=f"rec_add_{c_id}_{cat_label}"):
-            full_row = client.execute(
-                "SELECT * FROM foods WHERE fdc_id = ?", [c_id]
-            ).rows[0]
-            col_names = [
-                c[1] for c in client.execute("PRAGMA table_info(foods)").rows
-            ]
-            item_dict = dict(zip(col_names, full_row))
-            item_dict["grams"] = 100
-            st.session_state.cart.append(item_dict)
-            st.toast(f"Added 100g of {c_name[:20]}!")
-            st.rerun()
-  else:
-    st.markdown(
-        """
-        <div style="background: rgba(76, 175, 80, 0.15); border-left: 4px solid #4caf50; padding: 12px 14px; border-radius: 6px; margin: 12px 0;">
-            <b style="color: #4caf50; font-size: 1.0rem;">Complete Amino Acid Balance (100%+)</b><br>
-            <span style="opacity: 0.9; font-size: 0.88rem;">All essential amino acids meet WHO standards. Full protein utilization achieved.</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-  # ---------------------------------------------------------
-  # 8. ВКЛАДКИ З АНАЛІТИКОЮ (AMINOS, MACROS, MINERALS, VITAMINS, FATS)
-  # ---------------------------------------------------------
-  tab_aa, tab_macros, tab_min, tab_vit, tab_fats = st.tabs(
-      ["🥩 Aminos", "🍞 Macros", "⚡ Minerals", "💊 Vitamins", "🥑 Lipids"]
-  )
-
-  with tab_aa:
-    st.markdown(
-        f"##### Daily Amino Acid Targets (Tailored for **{body_weight:.1f} kg**"
-        " Body Weight):"
-    )
-
-    aa_data = []
-    for aa in WHO_REFERENCE.keys():
-      daily_req_mg = WHO_DAILY_REQ_PER_KG[aa] * body_weight
-      actual_mg = aa_totals_mg[aa]
-      req_met_pct = (
-          (actual_mg / daily_req_mg) * 100 if daily_req_mg > 0 else 0
-      )
-      score_pct = scores.get(aa, 0) * 100
-
-      if aa == limiting_aa and min_score < 1.0:
-        dot = "🔴"
-      elif req_met_pct < 100.0 or score_pct < 100.0:
-        dot = "🟡"
-      else:
-        dot = "🟢"
-
-      aa_data.append({
-          "": dot,
-          "Amino Acid": aa,
-          "Intake (g)": f"{actual_mg / 1000:.2f}g",
-          "Daily Target (g)": f"{daily_req_mg / 1000:.2f}g",
-          "Daily Met (%)": f"{req_met_pct:.0f}%",
-          "Protein Quality Score": f"{score_pct:.0f}%",
-      })
-
-    st.dataframe(
-        pd.DataFrame(aa_data),
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "": st.column_config.TextColumn(width="small"),
-            "Amino Acid": st.column_config.TextColumn(width="medium"),
-            "Intake (g)": st.column_config.TextColumn(width="small"),
-            "Daily Target (g)": st.column_config.TextColumn(width="medium"),
-            "Daily Met (%)": st.column_config.TextColumn(width="small"),
-            "Protein Quality Score": st.column_config.TextColumn(
-                width="medium"
+        # [FIX-4] категорії за цілими словами
+        CATEGORY_PATTERNS = [
+            (
+                "🌱 Legumes & Soy",
+                r"\b(soy|soya|soybeans?|tofu|beans?|lentils?|chickpeas?|peas?|edamame|lupin\w*|tempeh|miso)\b",
             ),
-        },
+            (
+                "🐟 Fish & Seafood",
+                r"\b(fish|salmon|tuna|cod|shrimps?|prawns?|crabs?|mackerel|sardines?|seafood|algae)\b",
+            ),
+            ("🧀 Dairy & Eggs", r"\b(milk|cheese|yogh?urt|eggs?|curd|whey|casein)\b"),
+            (
+                "🥩 Meat & Poultry",
+                r"\b(chicken|turkey|beef|pork|meat|lamb|duck|veal)\b",
+            ),
+            (
+                "🥜 Seeds & Nuts",
+                r"\b(seeds?|nuts?|almonds?|peanuts?|walnuts?|sesame|chia|cashews?)\b",
+            ),
+        ]
+
+        def get_food_category(name):
+            n = name.lower()
+            for label, pattern in CATEGORY_PATTERNS:
+                if re.search(pattern, n):
+                    return label
+            return "🌾 Grains & Other"
+
+        target_cols = AA_GROUP_COLS.get(limiting_aa, ["lysine"])
+        ref_mg_per_g = WHO_REFERENCE.get(limiting_aa, 45.0)
+
+        def mg_per_g_protein(row):
+            """[FIX-3] Густина амінокислоти в білку, а не абсолют на 100 г продукту."""
+            prot = row.get("protein") or 0
+            if prot <= 0:
+                return 0.0
+            return sum(row.get(c) or 0.0 for c in target_cols) * 1000 / prot
+
+        # [FIX-3] ≥5 г білка/100 г (реально з'їсти) і відсікання ≥3× еталона (схоже на помилку даних)
+        candidates = [
+            r
+            for r in active_catalog
+            if (r.get("protein") or 0) >= 5
+            and 0 < mg_per_g_protein(r) <= 3 * ref_mg_per_g
+        ]
+        candidates.sort(key=mg_per_g_protein, reverse=True)
+
+        diversified = {}
+        for item in candidates:
+            cat = get_food_category(item["name"])
+            if cat not in diversified:
+                diversified[cat] = item
+            if len(diversified) >= 5:
+                break
+
+        with st.container(border=True):
+            st.markdown(f"💡 **Foods dense in {limiting_aa} (by mg per g of protein)**")
+            st.caption(
+                "One pick per food group; only foods with at least 5 g protein per"
+                " 100 g and plausible values are listed."
+            )
+            for cat_label, cand in diversified.items():
+                rec1, rec2 = st.columns([4, 1])
+                with rec1:
+                    st.write(f"**{cat_label}**: {cand['name'][:42]}")
+                    st.caption(
+                        f"⭐ **{mg_per_g_protein(cand):.0f} mg {limiting_aa}/g protein**"
+                        f" (reference {ref_mg_per_g:.0f}) | {fmt(cand['protein'])}g protein"
+                        f" | {fmt(cand['calories'], 0)} kcal (per 100g)"
+                    )
+                with rec2:
+                    if st.button("➕ 100g", key=f"rec_add_{cand['fdc_id']}_{cat_label}"):
+                        add_to_cart(cand["fdc_id"], 100)
+    else:
+        st.markdown(
+            """
+            <div style="background: rgba(76, 175, 80, 0.15); border-left: 4px solid #4caf50; padding: 12px 14px; border-radius: 6px; margin: 12px 0;">
+                <b style="color: #4caf50; font-size: 1.0rem;">Amino acid score 100%+</b><br>
+                <span style="opacity: 0.9; font-size: 0.88rem;">All essential amino acid groups meet the reference pattern.</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # ---------------------------------------------------------
+    # 8. ВКЛАДКИ
+    # ---------------------------------------------------------
+    tab_aa, tab_macros, tab_min, tab_vit, tab_fats = st.tabs(
+        ["🥩 Aminos", "🍞 Macros", "⚡ Minerals", "💊 Vitamins", "🥑 Lipids"]
     )
 
-    st.caption("🔴 Limiting Deficit | 🟡 Suboptimal (<100%) | 🟢 Sufficient")
+    def value_with_coverage(col, nd=1, unit=""):
+        """[FIX-1] '—' якщо даних немає, зірочка якщо дані є не для всіх продуктів."""
+        have, n = coverage(col)
+        if have == 0:
+            return "no data"
+        mark = "*" if have < n else ""
+        return f"{sum_nutrient(col):.{nd}f}{unit}{mark}"
 
-    st.write("##### Daily Requirement Coverage (% of target):")
-    req_chart_df = pd.DataFrame({
-        "Amino Acid": list(WHO_REFERENCE.keys()),
-        "Coverage (%)": [
-            (aa_totals_mg[aa] / (WHO_DAILY_REQ_PER_KG[aa] * body_weight)) * 100
-            for aa in WHO_REFERENCE.keys()
-        ],
-    }).set_index("Amino Acid")
-    st.bar_chart(req_chart_df)
+    with tab_aa:
+        st.markdown(
+            f"##### Daily Amino Acid Targets (**{body_weight:.1f} kg** body weight):"
+        )
+        aa_data = []
+        for aa in WHO_REFERENCE:
+            daily_req_mg = WHO_DAILY_REQ_PER_KG[aa] * body_weight
+            actual_mg = aa_totals_mg[aa]
+            req_met_pct = actual_mg / daily_req_mg * 100 if daily_req_mg > 0 else 0
+            score_pct = scores.get(aa, 0) * 100
+            if aa == limiting_aa and min_score < 1.0:
+                dot = "🔴"
+            elif req_met_pct < 100.0 or score_pct < 100.0:
+                dot = "🟡"
+            else:
+                dot = "🟢"
+            aa_data.append(
+                {
+                    "": dot,
+                    "Amino Acid": aa,
+                    "Intake (g)": f"{actual_mg / 1000:.2f}g",
+                    "Daily Target (g)": f"{daily_req_mg / 1000:.2f}g",
+                    "Daily Met (%)": f"{req_met_pct:.0f}%",
+                    "Score vs pattern": f"{score_pct:.0f}%",
+                }
+            )
+        st.dataframe(pd.DataFrame(aa_data), use_container_width=True, hide_index=True)
+        st.caption("🔴 Limiting | 🟡 Below 100% | 🟢 Sufficient")
 
-  with tab_macros:
-    mc1, mc2 = st.columns(2)
-    with mc1:
-      st.metric("Calories", f"{total_cals:.0f} kcal")
-      st.metric("Total Fat", f"{total_fat:.1f} g")
-    with mc2:
-      st.metric("Carbohydrates", f"{total_carbs:.1f} g")
-      st.metric(
-          "Dietary Fiber",
-          f"{total_fiber:.1f} g",
-          f"{min(total_fiber / DAILY_VALUES['fiber'] * 100, 100):.0f}% RDA",
-      )
+        st.write("##### Daily Requirement Coverage (% of target):")
+        req_chart_df = pd.DataFrame(
+            {
+                "Amino Acid": list(WHO_REFERENCE.keys()),
+                "Coverage (%)": [
+                    aa_totals_mg[aa] / (WHO_DAILY_REQ_PER_KG[aa] * body_weight) * 100
+                    for aa in WHO_REFERENCE
+                ],
+            }
+        ).set_index("Amino Acid")
+        st.bar_chart(req_chart_df)
 
-  with tab_min:
-    minerals_data = [
-        ("Calcium", "calcium", "mg"),
-        ("Iron", "iron", "mg"),
-        ("Magnesium", "magnesium", "mg"),
-        ("Phosphorus", "phosphorus", "mg"),
-        ("Potassium", "potassium", "mg"),
-        ("Sodium", "sodium", "mg"),
-        ("Zinc", "zinc", "mg"),
-        ("Copper", "copper", "mg"),
-        ("Selenium", "selenium", "mcg"),
-    ]
-    m_rows = []
-    for label, key, unit in minerals_data:
-      val = sum_nutrient(key)
-      target = DAILY_VALUES[key]
-      pct = val / target * 100
-      dot = "🟢" if pct >= 100 else ("🟡" if pct >= 70 else "🔴")
-      m_rows.append({
-          "": dot,
-          "Mineral": label,
-          "Intake": f"{val:.1f} {unit}",
-          "Target": f"{target:.0f} {unit}",
-          "Met": f"{pct:.0f}%",
-      })
-    st.dataframe(
-        pd.DataFrame(m_rows), use_container_width=True, hide_index=True
-    )
+    with tab_macros:
+        mc1, mc2 = st.columns(2)
+        with mc1:
+            st.metric("Calories", value_with_coverage("calories", 0, " kcal"))
+            st.metric("Total Fat", value_with_coverage("fat", 1, " g"))
+        with mc2:
+            st.metric("Carbohydrates", value_with_coverage("carbs", 1, " g"))
+            fiber_have, _ = coverage("fiber")
+            st.metric(
+                "Dietary Fiber",
+                value_with_coverage("fiber", 1, " g"),
+                (
+                    f"{min(total_fiber / DAILY_VALUES['fiber'] * 100, 100):.0f}% RDA"
+                    if fiber_have
+                    else None
+                ),
+            )
+        st.caption("* = value missing for some foods in the plan; real total may be higher.")
 
-  with tab_vit:
-    vitamins_data = [
-        ("Vitamin C", "vitamin_c", "mg"),
-        ("Thiamin (B1)", "thiamin_b1", "mg"),
-        ("Riboflavin (B2)", "riboflavin_b2", "mg"),
-        ("Niacin (B3)", "niacin_b3", "mg"),
-        ("Vitamin B6", "vitamin_b6", "mg"),
-        ("Folate (B9)", "folate_b9", "mcg"),
-        ("Vitamin B12", "vitamin_b12", "mcg"),
-        ("Vitamin A (RAE)", "vitamin_a_rae", "mcg"),
-        ("Vitamin E", "vitamin_e", "mg"),
-        ("Vitamin D", "vitamin_d", "mcg"),
-        ("Vitamin K", "vitamin_k", "mcg"),
-    ]
-    v_rows = []
-    for label, key, unit in vitamins_data:
-      val = sum_nutrient(key)
-      target = DAILY_VALUES[key]
-      pct = val / target * 100
-      dot = "🟢" if pct >= 100 else ("🟡" if pct >= 70 else "🔴")
-      v_rows.append({
-          "": dot,
-          "Vitamin": label,
-          "Intake": f"{val:.1f} {unit}",
-          "Target": f"{target:.0f} {unit}",
-          "Met": f"{pct:.0f}%",
-      })
-    st.dataframe(
-        pd.DataFrame(v_rows), use_container_width=True, hide_index=True
-    )
+    def render_micro_table(items, name_header):
+        """[FIX-1/9] Таблиця мікронутрієнтів з охопленням і лімітним натрієм."""
+        rows = []
+        for label, key, unit in items:
+            have, n = coverage(key)
+            target = DAILY_VALUES[key]
+            if have == 0:
+                rows.append(
+                    {
+                        "": "⚪",
+                        name_header: label,
+                        "Intake": "no data",
+                        "Target": f"{target:.0f} {unit}",
+                        "Met": "—",
+                    }
+                )
+                continue
+            val = sum_nutrient(key)
+            pct = val / target * 100
+            if key in LIMIT_NUTRIENTS:
+                dot = "🟢" if pct <= 100 else "🔴"
+            else:
+                dot = "🟢" if pct >= 100 else ("🟡" if pct >= 70 else "🔴")
+            mark = "*" if have < n else ""
+            rows.append(
+                {
+                    "": dot,
+                    name_header: label + (" (limit)" if key in LIMIT_NUTRIENTS else ""),
+                    "Intake": f"{val:.1f} {unit}{mark}",
+                    "Target": f"{target:.0f} {unit}",
+                    "Met": f"{pct:.0f}%",
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.caption("⚪ no data for any food in the plan | * partial data")
 
-  with tab_fats:
-    sat = sum_nutrient("fat_saturated")
-    mono = sum_nutrient("fat_monounsaturated")
-    poly = sum_nutrient("fat_polyunsaturated")
-    chol = sum_nutrient("cholesterol")
+    with tab_min:
+        render_micro_table(
+            [
+                ("Calcium", "calcium", "mg"),
+                ("Iron", "iron", "mg"),
+                ("Magnesium", "magnesium", "mg"),
+                ("Phosphorus", "phosphorus", "mg"),
+                ("Potassium", "potassium", "mg"),
+                ("Sodium", "sodium", "mg"),
+                ("Zinc", "zinc", "mg"),
+                ("Copper", "copper", "mg"),
+                ("Selenium", "selenium", "mcg"),
+            ],
+            "Mineral",
+        )
 
-    st.write(f"- Saturated: **{sat:.1f} g**")
-    st.write(f"- Monounsaturated: **{mono:.1f} g**")
-    st.write(f"- Polyunsaturated: **{poly:.1f} g**")
-    st.write(f"- Cholesterol: **{chol:.0f} mg**")
+    with tab_vit:
+        render_micro_table(
+            [
+                ("Vitamin C", "vitamin_c", "mg"),
+                ("Thiamin (B1)", "thiamin_b1", "mg"),
+                ("Riboflavin (B2)", "riboflavin_b2", "mg"),
+                ("Niacin (B3)", "niacin_b3", "mg"),
+                ("Vitamin B6", "vitamin_b6", "mg"),
+                ("Folate (B9)", "folate_b9", "mcg"),
+                ("Vitamin B12", "vitamin_b12", "mcg"),
+                ("Vitamin A (RAE)", "vitamin_a_rae", "mcg"),
+                ("Vitamin E", "vitamin_e", "mg"),
+                ("Vitamin D", "vitamin_d", "mcg"),
+                ("Vitamin K", "vitamin_k", "mcg"),
+            ],
+            "Vitamin",
+        )
 
-    if (sat + mono + poly) > 0:
-      fat_df = pd.DataFrame({
-          "Fat Type": ["SFA", "MUFA", "PUFA"],
-          "Grams": [sat, mono, poly],
-      }).set_index("Fat Type")
-      st.bar_chart(fat_df)
+    with tab_fats:
+        st.write(f"- Saturated: **{value_with_coverage('fat_saturated', 1, ' g')}**")
+        st.write(f"- Monounsaturated: **{value_with_coverage('fat_monounsaturated', 1, ' g')}**")
+        st.write(f"- Polyunsaturated: **{value_with_coverage('fat_polyunsaturated', 1, ' g')}**")
+        st.write(f"- Cholesterol: **{value_with_coverage('cholesterol', 0, ' mg')}**")
+
+        sat = sum_nutrient("fat_saturated")
+        mono = sum_nutrient("fat_monounsaturated")
+        poly = sum_nutrient("fat_polyunsaturated")
+        if (sat + mono + poly) > 0:
+            fat_df = pd.DataFrame(
+                {"Fat Type": ["SFA", "MUFA", "PUFA"], "Grams": [sat, mono, poly]}
+            ).set_index("Fat Type")
+            st.bar_chart(fat_df)
+
+st.divider()
+st.caption(  # [FIX-13]
+    "Educational tool, not medical advice. Values come from open food composition"
+    " databases and may be incomplete or estimated."
+)
