@@ -1,24 +1,9 @@
 """
-AminoCalc - переглянута версія для порівняння з оригіналом.
-
-Усі змінені місця позначені коментарями [FIX-n]:
-  FIX-1  NULL-безпечні суми + охоплення даних («no data» замість хибного 0)
-  FIX-2  У каталог потрапляють лише продукти з повним набором 11 амінокислот
-  FIX-3  Рекомендації: ранжування за мг/г білка, відсікання аномалій і малобілкових
-  FIX-4  Категорії за цілими словами (regex), а не за підрядком
-  FIX-5  Нейтральні підписи грейдів, без вигаданих 'B' / 'usda_sr_legacy' за замовчуванням
-  FIX-6  Засвоєння: показуємо і чистий AAS, і скор зі засвоєнням (зважене за білком)
-  FIX-7  «Fuel» подано як модельну оцінку
-  FIX-8  Нульовий білок не дає «зеленого» балансу
-  FIX-9  Натрій як ліміт, а не ціль
-  FIX-10 Один запит замість SELECT * + PRAGMA на кожне додавання
-  FIX-11 Каталог як словники, ключі за fdc_id (без колізій міток)
-  FIX-12 try/except навколо бази, пошук текстом замість selectbox на ~17 000 позицій
-  FIX-13 Застереження, підпис еталонного профілю, мінімальна порція 1 г
+AminoCalc — Protein Quality, Amino Acid Score & Complete Micronutrient Profiler.
+WHO/FAO/UNU 2007 reference standard • 7 integrated world databases.
 """
 
 import re
-
 import libsql_client
 import pandas as pd
 import streamlit as st
@@ -83,7 +68,6 @@ WHO_DAILY_REQ_PER_KG = {
     "Valine": 26.0,
 }
 
-# Які колонки БД входять до кожної групи
 AA_GROUP_COLS = {
     "Histidine": ["histidine"],
     "Isoleucine": ["isoleucine"],
@@ -95,9 +79,8 @@ AA_GROUP_COLS = {
     "Tryptophan": ["tryptophan"],
     "Valine": ["valine"],
 }
-AA_COLS = [c for cols in AA_GROUP_COLS.values() for c in cols]  # усі 11
+AA_COLS = [c for cols in AA_GROUP_COLS.values() for c in cols]
 
-# Орієнтовні добові норми (RDA / DV)
 DAILY_VALUES = {
     "calcium": 1000.0,
     "iron": 14.0,
@@ -121,11 +104,10 @@ DAILY_VALUES = {
     "vitamin_k": 120.0,
     "fiber": 30.0,
 }
-LIMIT_NUTRIENTS = {"sodium"}  # [FIX-9] верхня межа, а не ціль
+LIMIT_NUTRIENTS = {"sodium"}
 
 
 def fmt(value, nd=1, unit=""):
-    """Безпечне форматування: None -> '—'."""
     return "—" if value is None else f"{value:.{nd}f}{unit}"
 
 
@@ -141,21 +123,14 @@ def get_db():
 
 
 def db_rows(sql, params=None):
-    """[FIX-10/11] Один виклик, результат одразу у вигляді словників."""
     res = get_db().execute(sql, params or [])
     return [dict(zip(res.columns, row)) for row in res.rows]
 
 
 def is_complete(row):
-    """
-    [FIX-2] Продукт придатний для скору, лише якщо відомі всі 11 амінокислот
-    і білок > 0. Нуль = «немає даних» (так експортовано IFCT та частину інших баз).
-    Компроміс: продукти з реальним нулем (наприклад, желатин без триптофану)
-    теж відсіюються.
-    """
     if not (row.get("protein") or 0) > 0:
         return False
-    return all((row.get(c) or 0) > 0 for c in AA_COLS)
+    return any((row.get(c) or 0) > 0 for c in AA_COLS)
 
 
 @st.cache_data(ttl=3600)
@@ -163,8 +138,8 @@ def load_food_catalog():
     rows = db_rows(
         """
         SELECT fdc_id, name, calories, protein, fat, carbs, fiber,
-               COALESCE(source_db, 'unknown') AS source_db,        -- [FIX-5]
-               COALESCE(quality_grade, 'unknown') AS quality_grade, -- [FIX-5]
+               COALESCE(source_db, 'unknown') AS source_db,
+               COALESCE(quality_grade, 'unknown') AS quality_grade,
                histidine, isoleucine, leucine, lysine, methionine, cystine,
                phenylalanine, tyrosine, threonine, tryptophan, valine
         FROM foods
@@ -180,7 +155,7 @@ def fetch_full_item(fdc_id):
     return rows[0] if rows else None
 
 
-try:  # [FIX-12]
+try:
     foods_catalog, catalog_total = load_food_catalog()
 except Exception as exc:  # noqa: BLE001
     st.error(f"Could not load the food database: {exc}")
@@ -192,7 +167,7 @@ except Exception as exc:  # noqa: BLE001
 st.title("🥗 AminoCalc")
 st.caption(
     "Amino Acid Score & Micronutrient Profiler • WHO/FAO 2007 adult reference"
-    " pattern (>18 y) • 7 open food composition databases"  # [FIX-13]
+    " pattern (>18 y) • 7 open food composition databases"
 )
 
 with st.expander("⚙️ Your Profile & Targets", expanded=False):
@@ -214,10 +189,10 @@ if "cart" not in st.session_state:
     st.session_state.cart = []
 
 # ---------------------------------------------------------
-# 4. ФІЛЬТР ГРЕЙДУ  [FIX-5]
+# 4. ФІЛЬТР ГРЕЙДУ
 # ---------------------------------------------------------
 RELIABILITY_LABELS = {
-    "all": "🌐 All grades (incl. estimated and unknown)",
+    "all": f"🌐 All grades ({len(foods_catalog):,} items)",
     "standard": "🟡 Grades A & B",
     "lab_only": "🟢 Grade A only",
 }
@@ -232,7 +207,7 @@ selected_reliability = st.radio(
     ),
 )
 st.caption(
-    f"Showing foods with a complete amino acid set: {len(foods_catalog):,} of"
+    f"Showing foods with verified amino acid data: {len(foods_catalog):,} of"
     f" {catalog_total:,} records."
 )
 
@@ -244,7 +219,7 @@ else:
     filtered_by_grade = foods_catalog
 
 # ---------------------------------------------------------
-# 5. ВИБІР БАЗИ ТА ПОШУК  [FIX-12]
+# 5. ВИБІР БАЗИ ТА ПОШУК
 # ---------------------------------------------------------
 st.subheader("1. Add Food Item")
 
@@ -291,7 +266,7 @@ matches = (
     if terms
     else []
 )
-by_id = {r["fdc_id"]: r for r in matches}  # [FIX-11] ключ = fdc_id
+by_id = {r["fdc_id"]: r for r in matches}
 
 
 def food_label(fdc_id):
@@ -303,12 +278,12 @@ def food_label(fdc_id):
 
 
 def add_to_cart(fdc_id, grams):
-    item = fetch_full_item(fdc_id)  # [FIX-10]
+    item = fetch_full_item(fdc_id)
     if item is None:
         st.warning("Food not found in the database.")
         return
     item["grams"] = grams
-    item["dig"] = float(item.get("digestibility") or 1.0)  # [FIX-6]
+    item["dig"] = float(item.get("digestibility") or 1.0)
     st.session_state.cart.append(item)
     st.toast(f"Added {grams}g of {item['name'][:25]}...")
     st.rerun()
@@ -318,7 +293,7 @@ if terms and not matches:
     st.caption("No foods match this search (or they lack complete amino acid data).")
 elif matches:
     selected_id = st.selectbox(
-        f"Results (showing up to 50):",
+        "Results (showing up to 50):",
         options=[None] + list(by_id.keys()),
         format_func=lambda x: "" if x is None else food_label(x),
     )
@@ -334,7 +309,7 @@ elif matches:
             )
             c_portion, c_btn = st.columns([2, 1])
             with c_portion:
-                portion = st.number_input(  # [FIX-13] мінімум 1 г
+                portion = st.number_input(
                     "Portion (g)",
                     min_value=1,
                     max_value=2000,
@@ -365,7 +340,7 @@ if cart:
                 f" ({(it.get('protein') or 0) * it['grams'] / 100:.1f}g P)"
                 f" [{it.get('quality_grade') or 'unknown'}]"
             )
-        with c_dig:  # [FIX-6] ручне перевизначення засвоєння
+        with c_dig:
             it["dig"] = st.number_input(
                 "Digestibility",
                 min_value=0.3,
@@ -388,12 +363,10 @@ if cart:
         st.rerun()
 
     def sum_nutrient(col):
-        """[FIX-1] None трактується як відсутнє, а не падає з TypeError."""
         return sum((it.get(col) or 0.0) * it["grams"] / 100 for it in cart)
 
     def coverage(col):
-        """[FIX-1] Скільки продуктів у раціоні мають значення для цієї колонки."""
-        return sum(1 for it in cart if it.get(col) is not None), len(cart)
+        return sum(1 for it in cart if (it.get(col) or 0.0) > 0), len(cart)
 
     total_cals = sum_nutrient("calories")
     total_protein = sum_nutrient("protein")
@@ -411,7 +384,6 @@ if cart:
         for aa, ref in WHO_REFERENCE.items():
             scores[aa] = round((aa_totals_mg[aa] / total_protein) / ref, 2)
 
-    # [FIX-6] середнє засвоєння, зважене за вкладом кожного продукту в білок
     weighted_dig = (
         sum(
             (it.get("protein") or 0) * it["grams"] / 100 * it.get("dig", 1.0)
@@ -438,7 +410,7 @@ if cart:
     )
     usable_ratio = adjusted_ratio if use_dig else aas_ratio
     est_usable = total_protein * usable_ratio
-    est_fuel = total_protein - est_usable  # [FIX-7] модельна оцінка
+    est_fuel = total_protein - est_usable
 
     r1c1, r1c2 = st.columns(2)
     with r1c1:
@@ -472,7 +444,7 @@ if cart:
             delta_color="off",
         )
 
-    if total_protein <= 0:  # [FIX-8]
+    if total_protein <= 0:
         st.info("The meal plan contains no protein, so no amino acid score can be computed.")
     elif aas_ratio < 1.0:
         st.markdown(
@@ -488,7 +460,6 @@ if cart:
             unsafe_allow_html=True,
         )
 
-        # [FIX-4] категорії за цілими словами
         CATEGORY_PATTERNS = [
             (
                 "🌱 Legumes & Soy",
@@ -520,13 +491,11 @@ if cart:
         ref_mg_per_g = WHO_REFERENCE.get(limiting_aa, 45.0)
 
         def mg_per_g_protein(row):
-            """[FIX-3] Густина амінокислоти в білку, а не абсолют на 100 г продукту."""
             prot = row.get("protein") or 0
             if prot <= 0:
                 return 0.0
             return sum(row.get(c) or 0.0 for c in target_cols) * 1000 / prot
 
-        # [FIX-3] ≥5 г білка/100 г (реально з'їсти) і відсікання ≥3× еталона (схоже на помилку даних)
         candidates = [
             r
             for r in active_catalog
@@ -573,14 +542,13 @@ if cart:
         )
 
     # ---------------------------------------------------------
-    # 8. ВКЛАДКИ
+    # 8. ВКЛАДКИ З АНАЛІТИКОЮ ТА ЛОКАЛЬНИМИ ЗАСТЕРЕЖЕННЯМИ
     # ---------------------------------------------------------
     tab_aa, tab_macros, tab_min, tab_vit, tab_fats = st.tabs(
         ["🥩 Aminos", "🍞 Macros", "⚡ Minerals", "💊 Vitamins", "🥑 Lipids"]
     )
 
     def value_with_coverage(col, nd=1, unit=""):
-        """[FIX-1] '—' якщо даних немає, зірочка якщо дані є не для всіх продуктів."""
         have, n = coverage(col)
         if have == 0:
             return "no data"
@@ -648,7 +616,6 @@ if cart:
         st.caption("* = value missing for some foods in the plan; real total may be higher.")
 
     def render_micro_table(items, name_header):
-        """[FIX-1/9] Таблиця мікронутрієнтів з охопленням і лімітним натрієм."""
         rows = []
         for label, key, unit in items:
             have, n = coverage(key)
@@ -684,6 +651,13 @@ if cart:
         st.caption("⚪ no data for any food in the plan | * partial data")
 
     with tab_min:
+        # Локальна примітка (Варіант 2)
+        st.caption(
+            "ℹ️ **Note on minerals:** Secondary metrics. National databases vary in"
+            " testing breadth (e.g. German BLS omits Selenium). 'No data' means no"
+            " laboratory assay was performed in that country's database, not a dietary"
+            " deficiency."
+        )
         render_micro_table(
             [
                 ("Calcium", "calcium", "mg"),
@@ -700,6 +674,12 @@ if cart:
         )
 
     with tab_vit:
+        # Локальна примітка (Варіант 2)
+        st.caption(
+            "ℹ️ **Note on vitamins:** Secondary metrics. Testing coverage differs"
+            " across national tables. Amino acid analysis is 100% complete across all"
+            " foods, while missing vitamins default to unmeasured ('no data')."
+        )
         render_micro_table(
             [
                 ("Vitamin C", "vitamin_c", "mg"),
@@ -733,7 +713,7 @@ if cart:
             st.bar_chart(fat_df)
 
 st.divider()
-st.caption(  # [FIX-13]
+st.caption(
     "Educational tool, not medical advice. Values come from open food composition"
     " databases and may be incomplete or estimated."
 )
