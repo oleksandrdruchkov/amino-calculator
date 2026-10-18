@@ -8,6 +8,8 @@ import libsql_client
 import pandas as pd
 import streamlit as st
 
+from presets import PRESETS
+
 # ---------------------------------------------------------
 # 1. PAGE CONFIGURATION & MOBILE-FIRST ADAPTIVE STYLES
 # ---------------------------------------------------------
@@ -155,6 +157,43 @@ def fetch_full_item(fdc_id):
     return rows[0] if rows else None
 
 
+def fetch_items_by_ids(ids):
+    ids = list(ids)
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = db_rows(f"SELECT * FROM foods WHERE fdc_id IN ({placeholders})", ids)
+    return {r["fdc_id"]: r for r in rows}
+
+
+def make_cart_item(item, grams):
+    """Готує елемент кошика. uid потрібен, щоб ключі віджетів не збивалися
+    після видалення чи заміни продуктів."""
+    st.session_state.uid_counter = st.session_state.get("uid_counter", 0) + 1
+    item["grams"] = grams
+    item["dig"] = float(item.get("digestibility") or 1.0)
+    item["uid"] = st.session_state.uid_counter
+    return item
+
+
+def load_preset(key, servings=1.0, replace=True):
+    """Завантажує шаблон у кошик. Повертає підписи продуктів, яких немає в базі."""
+    items = PRESETS[key]["items"]
+    found = fetch_items_by_ids([i for i, _, _ in items])
+    new_items, missing = [], []
+    for fdc_id, grams, label in items:
+        row = found.get(fdc_id)
+        if row is None:
+            missing.append(label)
+        else:
+            new_items.append(make_cart_item(dict(row), max(1, round(grams * servings))))
+    if replace:
+        st.session_state.cart = new_items
+    else:
+        st.session_state.cart.extend(new_items)
+    return missing
+
+
 try:
     foods_catalog, catalog_total = load_food_catalog()
 except Exception as exc:  # noqa: BLE001
@@ -223,6 +262,33 @@ else:
 # ---------------------------------------------------------
 st.subheader("1. Add Food Item")
 
+with st.expander("📋 Sample meals (templates)", expanded=False):
+    preset_key = st.selectbox(
+        "Template:",
+        options=list(PRESETS.keys()),
+        format_func=lambda k: PRESETS[k]["title"],
+        key="preset_choice",
+    )
+    preset = PRESETS[preset_key]
+    st.caption(preset["note"])
+    st.caption(" • ".join(f"{label} {grams} g" for _, grams, label in preset["items"]))
+    servings = st.number_input(
+        "Servings", min_value=0.5, max_value=5.0, value=1.0, step=0.5, key="preset_servings"
+    )
+    pc1, pc2 = st.columns(2)
+    with pc1:
+        if st.button("Load (replace plan)", key="preset_load", use_container_width=True):
+            st.session_state.preset_missing = load_preset(preset_key, servings, replace=True)
+            st.rerun()
+    with pc2:
+        if st.button("Add to plan", key="preset_add", use_container_width=True):
+            st.session_state.preset_missing = load_preset(preset_key, servings, replace=False)
+            st.rerun()
+
+_missing = st.session_state.pop("preset_missing", None)
+if _missing:
+    st.warning("Not found in the database: " + ", ".join(_missing))
+
 db_choices = {
     "all": "🌐 All Sources",
     "bls_de_4_0": "🇩🇪 BLS 4.0 (Germany)",
@@ -282,9 +348,7 @@ def add_to_cart(fdc_id, grams):
     if item is None:
         st.warning("Food not found in the database.")
         return
-    item["grams"] = grams
-    item["dig"] = float(item.get("digestibility") or 1.0)
-    st.session_state.cart.append(item)
+    st.session_state.cart.append(make_cart_item(item, grams))
     st.toast(f"Added {grams}g of {item['name'][:25]}...")
     st.rerun()
 
@@ -347,11 +411,11 @@ if cart:
                 max_value=1.0,
                 value=float(it.get("dig", 1.0)),
                 step=0.01,
-                key=f"dig_{idx}",
+                key=f"dig_{it.get('uid', idx)}",
                 help="1.00 = no correction (also used when the database has no value).",
             )
         with c_del:
-            if st.button("✕", key=f"del_{idx}", help="Remove"):
+            if st.button("✕", key=f"del_{it.get('uid', idx)}", help="Remove"):
                 item_to_remove = idx
 
     if item_to_remove is not None:
