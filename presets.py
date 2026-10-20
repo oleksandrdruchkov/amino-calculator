@@ -25,4 +25,21 @@ PRESETS = {
             (7001052, 10,  "Butter"),
         ],
     },
+    "vegetarian_irish_breakfast": {
+        "title": "Vegetarian Irish breakfast (1 serving)",
+        "note": (
+            "Ovo-lacto vegetarian version: bacon, pork sausages and black pudding are "
+            "replaced by vegetarian bratwurst (tofu and wheat protein, from BLS 4.0). "
+            "Soda bread is not in the database, so wholemeal bread is used instead."
+        ),
+        "items": [
+            (6000290, 90,  "Vegetarian bratwurst"),
+            (9002066, 100, "Fried eggs"),
+            (9001225, 80,  "Tomato"),
+            (9001335, 60,  "Mushrooms"),
+            (7001808, 130, "Baked beans"),
+            (7000672, 70,  "Wholemeal bread"),
+            (7001052, 10,  "Butter"),
+        ],
+    },
 }
