@@ -7,6 +7,7 @@ import html
 import io
 import json
 import re
+from xml.sax.saxutils import escape as xml_escape
 
 import libsql_client
 import pandas as pd
@@ -264,6 +265,33 @@ composition databases and may be incomplete or estimated.</div>
 </body></html>"""
 
 
+_PUNCT_MAP = str.maketrans(
+    {"’": "'", "‘": "'", "“": '"', "”": '"', "–": "-", "—": "-", "×": "x", "°": " deg"}
+)
+
+
+def pdf_name(name):
+    """Назва продукту для PDF зі стандартним шрифтом (Latin-1).
+    Дужки лише з не-латинським текстом (корейські/японські/китайські
+    переклади назв) прибираються, решта не-Latin-1 символів відкидається,
+    тож замість «???» виходить чиста англомовна назва."""
+    s = str(name).translate(_PUNCT_MAP)
+    prev = None
+    while prev != s:
+        prev = s
+        s = re.sub(
+            r"\([^()]*\)",
+            lambda m: m.group(0) if re.search(r"[A-Za-z]", m.group(0)) else "",
+            s,
+        )
+    s = s.encode("latin-1", "ignore").decode("latin-1")
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"\s+([,;)\]])", r"\1", s)
+    s = re.sub(r"([(\[])\s+", r"\1", s)
+    s = re.sub(r"(,\s*)+$", "", s).strip()
+    return s or "(name not printable)"
+
+
 def build_pdf_bytes(
     cart,
     aa_totals_mg,
@@ -298,6 +326,9 @@ def build_pdf_bytes(
     h1, h2, small = styles["Title"], styles["Heading3"], styles["BodyText"]
     h1.fontSize, h1.alignment = 16, 0
     small.fontSize = 8
+    from reportlab.lib.styles import ParagraphStyle
+
+    cell = ParagraphStyle("cell", parent=small, fontSize=8, leading=9.5)
 
     def make_table(data, col_w, row_colors=None, cell_colors=None, text_left_cols=(0,)):
         tbl = Table(data, colWidths=[w * mm for w in col_w], repeatRows=1)
@@ -307,6 +338,7 @@ def build_pdf_bytes(
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("TOPPADDING", (0, 0), (-1, -1), 2),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
         ]
@@ -326,7 +358,7 @@ def build_pdf_bytes(
     for it in cart:
         foods.append(
             [
-                t(it["name"])[:70],
+                Paragraph(xml_escape(pdf_name(it["name"])), cell),
                 it["grams"],
                 f"{(it.get('protein') or 0) * it['grams'] / 100:.1f}",
                 f"{(it.get('calories') or 0) * it['grams'] / 100:.0f}",
