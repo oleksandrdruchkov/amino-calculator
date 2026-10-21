@@ -551,21 +551,27 @@ def make_cart_item(item, grams):
 @st.cache_data(ttl=3600)
 def resolve_food_query(query):
     """Шаблоны могут ссылаться на продукт по тексту вместо fdc_id.
-    'kidney beans cooked boiled -canned' -> fdc_id лучшего совпадения или None.
-    Слова без минуса должны встречаться в названии, со знаком «-» — нет.
-    Приоритет: есть данные по лизину -> USDA SR Legacy -> грейд A/B -> короткое имя."""
+    Первое слово запроса обязательно должно быть в названии (подстрока, поэтому
+    лучше писать в единственном числе: «chickpea» найдет и «chickpeas»).
+    Остальные слова необязательны, но повышают рейтинг совпадения; слова со
+    знаком «-» (например -flour) исключаются.
+    Дальше приоритет: есть данные по лизину -> USDA SR Legacy -> грейд A/B ->
+    короткое имя. Возвращает fdc_id лучшего совпадения или None."""
     words = [re.sub(r"[^\w\-]", "", w.lower()) for w in query.split()]
     inc = [w for w in words if w and not w.startswith("-")]
     exc = [w[1:] for w in words if w.startswith("-") and len(w) > 1]
     if not inc:
         return None
-    where = ["LOWER(name) LIKE ?"] * len(inc) + ["LOWER(name) NOT LIKE ?"] * len(exc)
-    params = [f"%{w}%" for w in inc + exc]
+    required, optional = inc[0], inc[1:]
+    score = " + ".join(["CASE WHEN LOWER(name) LIKE ? THEN 1 ELSE 0 END"] * len(optional)) or "0"
+    where = ["LOWER(name) LIKE ?"] + ["LOWER(name) NOT LIKE ?"] * len(exc)
+    params = [f"%{w}%" for w in optional] + [f"%{w}%" for w in [required] + exc]
     rows = db_rows(
         f"""
-        SELECT fdc_id FROM foods
+        SELECT fdc_id, ({score}) AS match_score FROM foods
         WHERE {" AND ".join(where)}
         ORDER BY
+          match_score DESC,
           CASE WHEN lysine IS NOT NULL AND lysine > 0 THEN 0 ELSE 1 END,
           CASE source_db WHEN 'usda_sr_legacy' THEN 0 ELSE 1 END,
           CASE quality_grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END,
@@ -584,7 +590,10 @@ def load_preset(key, servings=1.0, replace=True):
     resolved = []
     for ref, grams, label in PRESETS[key]["items"]:
         if isinstance(ref, str):
+            query_text = ref
             ref = resolve_food_query(ref)
+            if ref is None:
+                label = f"{label} (query: {query_text})"
         resolved.append((ref, grams, label))
     found = fetch_items_by_ids(
         [r for r, _, _ in resolved if r is not None and not isinstance(r, dict)]
