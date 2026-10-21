@@ -16,6 +16,13 @@ import streamlit.components.v1 as components
 
 from presets import PRESETS
 
+try:  # необязательные дополнительные шаблоны (вегетарианские/веганские)
+    from presets_veg import VEG_PRESETS
+
+    PRESETS.update(VEG_PRESETS)
+except ImportError:
+    pass
+
 # ---------------------------------------------------------
 # 1. PAGE CONFIGURATION & MOBILE-FIRST ADAPTIVE STYLES
 # ---------------------------------------------------------
