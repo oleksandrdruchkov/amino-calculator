@@ -78,9 +78,17 @@ PRESETS = {
     },
     "hummus_plate": {
         "title": "Hummus plate with pita (vegan)",
-        "note": "Hummus, whole-wheat pita, cucumber, tomato. Cooking/olive oil is not included (not in the database), so calories are understated by roughly 40-90 kcal.",
+        "note": (
+            "Hummus is built from its ingredients (about 100 g of hummus: chickpeas, "
+            "tahini, lemon juice, garlic), served with whole-wheat pita, cucumber and "
+            "tomato. Olive oil and salt are not included, so calories are slightly "
+            "understated."
+        ),
         "items": [
-            ("hummus commercial", 100, "Hummus"),
+            ("chickpeas mature seeds cooked boiled", 70, "Chickpeas, cooked"),
+            ("tahini", 15, "Tahini"),
+            ("lemon juice raw", 10, "Lemon juice"),
+            ("garlic raw", 3, "Garlic"),
             ("pita whole-wheat", 60, "Whole-wheat pita"),
             ("cucumber with peel raw", 80, "Cucumber"),
             ("tomatoes red ripe raw", 80, "Tomato"),
