@@ -3,10 +3,15 @@ AminoCalc — Protein Quality, Amino Acid Score & Complete Micronutrient Profile
 WHO/FAO/UNU 2007 reference standard • 7 integrated world databases.
 """
 
+import html
+import io
+import json
 import re
+
 import libsql_client
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from presets import PRESETS
 
@@ -111,6 +116,270 @@ LIMIT_NUTRIENTS = {"sodium"}
 
 def fmt(value, nd=1, unit=""):
     return "—" if value is None else f"{value:.{nd}f}{unit}"
+
+
+# ---------------------------------------------------------
+# 1b. ЕКСПОРТ: ДРУК НА ОДИН АРКУШ A4 ТА PDF
+# ---------------------------------------------------------
+def build_print_html(
+    cart,
+    aa_totals_mg,
+    scores,
+    limiting_aa,
+    totals,
+    weight_kg,
+    target_protein,
+    aas_ratio,
+    weighted_dig,
+    adjusted_ratio,
+    auto_print=False,
+):
+    """Самодостатня HTML-сторінка формату A4. Якщо вміст вищий за аркуш,
+    він автоматично масштабується, щоб усе вмістилося на одній сторінці."""
+    e = html.escape
+
+    food_rows = "".join(
+        f"<tr><td>{e(str(it['name']))}</td>"
+        f"<td class='n'>{it['grams']}</td>"
+        f"<td class='n'>{(it.get('protein') or 0) * it['grams'] / 100:.1f}</td>"
+        f"<td class='n'>{(it.get('calories') or 0) * it['grams'] / 100:.0f}</td>"
+        f"<td class='n'>{it.get('dig', 1.0):.2f}</td></tr>"
+        for it in cart
+    )
+
+    aa_rows = ""
+    for aa in WHO_REFERENCE:
+        daily_mg = WHO_DAILY_REQ_PER_KG[aa] * weight_kg
+        actual = aa_totals_mg[aa]
+        met = actual / daily_mg * 100 if daily_mg else 0
+        score = scores.get(aa, 0) * 100
+        cls = "lim" if (aa == limiting_aa and aas_ratio < 1.0) else ""
+        aa_rows += (
+            f"<tr class='{cls}'><td>{e(aa)}</td>"
+            f"<td class='n'>{actual:.0f}</td>"
+            f"<td class='n'>{daily_mg:.0f}</td>"
+            f"<td class='n'>{met:.0f}%</td>"
+            f"<td class='n'>{score:.0f}%</td></tr>"
+        )
+
+    total_grams = sum(it["grams"] for it in cart)
+    auto = (
+        "window.addEventListener('load', function(){"
+        " setTimeout(function(){ window.print(); }, 300); });"
+        if auto_print
+        else ""
+    )
+
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>AminoCalc — meal plan</title>
+<style>
+  @page {{ size: A4 portrait; margin: 10mm; }}
+  * {{ box-sizing: border-box; }}
+  body {{ font-family: Arial, sans-serif; color:#111; margin:0; font-size:11px; }}
+  @media screen {{ body {{ margin:16px; }} }}
+  #page {{ width:190mm; }}
+  h1 {{ font-size:17px; margin:0 0 2px; }}
+  h2 {{ font-size:12px; margin:10px 0 4px; border-bottom:1px solid #999; padding-bottom:2px; }}
+  table {{ border-collapse:collapse; width:100%; }}
+  th, td {{ border:1px solid #bbb; padding:2px 6px; text-align:left; }}
+  th {{ background:#eee; }}
+  td.n, th.n {{ text-align:right; }}
+  tr.lim td {{ background:#fde3e2; font-weight:bold; }}
+  .sum {{ display:flex; gap:18px; flex-wrap:wrap; margin:6px 0; }}
+  .sum div b {{ display:block; font-size:13px; }}
+  .foot {{ margin-top:10px; font-size:9px; color:#555; }}
+  @media print {{
+    * {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+  }}
+</style></head><body><div id="page">
+<h1>AminoCalc — meal plan</h1>
+<div>WHO/FAO/UNU 2007 adult pattern • body weight {weight_kg:.1f} kg •
+protein target {target_protein:.1f} g</div>
+
+<h2>Foods</h2>
+<table><tr><th>Food</th><th class='n'>g</th><th class='n'>Protein, g</th>
+<th class='n'>kcal</th><th class='n'>Digest.</th></tr>
+{food_rows}
+<tr><th>Total</th><th class='n'>{total_grams}</th>
+<th class='n'>{totals['protein']:.1f}</th><th class='n'>{totals['cal']:.0f}</th><th></th></tr>
+</table>
+
+<div class="sum">
+  <div>Amino acid score<b>{aas_ratio * 100:.0f}%</b></div>
+  <div>Limiting AA<b>{e(limiting_aa)}</b></div>
+  <div>Avg. digestibility<b>{weighted_dig * 100:.0f}%</b></div>
+  <div>Digestibility-adjusted<b>{adjusted_ratio * 100:.0f}%</b></div>
+  <div>Fat / Carbs / Fiber<b>{totals['fat']:.0f} / {totals['carbs']:.0f} / {totals['fiber']:.0f} g</b></div>
+</div>
+
+<h2>Essential amino acids</h2>
+<table><tr><th>Amino acid</th><th class='n'>Intake, mg</th><th class='n'>Daily target, mg</th>
+<th class='n'>Target met</th><th class='n'>Score vs pattern</th></tr>
+{aa_rows}</table>
+
+<div class="foot">Educational tool, not medical advice. Values come from open food
+composition databases and may be incomplete or estimated.</div>
+</div>
+<script>
+  function fit() {{
+    var p = document.getElementById('page');
+    p.style.zoom = 1;
+    var maxH = 277 / 25.4 * 96;
+    var h = p.offsetHeight;
+    if (h > maxH) {{ p.style.zoom = (maxH / h) * 0.97; }}
+  }}
+  window.addEventListener('load', fit);
+  window.addEventListener('beforeprint', fit);
+  {auto}
+</script>
+</body></html>"""
+
+
+def build_pdf_bytes(
+    cart,
+    aa_totals_mg,
+    scores,
+    limiting_aa,
+    totals,
+    weight_kg,
+    target_protein,
+    aas_ratio,
+    weighted_dig,
+    adjusted_ratio,
+):
+    """PDF формату A4 на одну сторінку (вміст стискається, якщо не влазить)."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        KeepInFrame,
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
+
+    def t(s):
+        # Стандартні шрифти PDF знають лише latin-1
+        return str(s).encode("latin-1", "replace").decode("latin-1")
+
+    styles = getSampleStyleSheet()
+    h1, h2, small = styles["Title"], styles["Heading3"], styles["BodyText"]
+    h1.fontSize, h1.alignment = 16, 0
+    small.fontSize = 8
+
+    def make_table(data, col_w, highlight_row=None):
+        tbl = Table(data, colWidths=[w * mm for w in col_w], repeatRows=1)
+        style = [
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]
+        if highlight_row:
+            style += [
+                (
+                    "BACKGROUND",
+                    (0, highlight_row),
+                    (-1, highlight_row),
+                    colors.HexColor("#fde3e2"),
+                ),
+                ("FONTNAME", (0, highlight_row), (-1, highlight_row), "Helvetica-Bold"),
+            ]
+        tbl.setStyle(TableStyle(style))
+        return tbl
+
+    foods = [["Food", "g", "Protein, g", "kcal", "Digest."]]
+    for it in cart:
+        foods.append(
+            [
+                t(it["name"])[:70],
+                it["grams"],
+                f"{(it.get('protein') or 0) * it['grams'] / 100:.1f}",
+                f"{(it.get('calories') or 0) * it['grams'] / 100:.0f}",
+                f"{it.get('dig', 1.0):.2f}",
+            ]
+        )
+    foods.append(
+        [
+            "Total",
+            sum(it["grams"] for it in cart),
+            f"{totals['protein']:.1f}",
+            f"{totals['cal']:.0f}",
+            "",
+        ]
+    )
+
+    aa_rows = [
+        ["Amino acid", "Intake, mg", "Daily target, mg", "Target met", "Score vs pattern"]
+    ]
+    hl = None
+    for i, aa in enumerate(WHO_REFERENCE, start=1):
+        daily = WHO_DAILY_REQ_PER_KG[aa] * weight_kg
+        actual = aa_totals_mg[aa]
+        aa_rows.append(
+            [
+                t(aa),
+                f"{actual:.0f}",
+                f"{daily:.0f}",
+                f"{actual / daily * 100:.0f}%" if daily else "-",
+                f"{scores.get(aa, 0) * 100:.0f}%",
+            ]
+        )
+        if aa == limiting_aa and aas_ratio < 1.0:
+            hl = i
+
+    story = [
+        Paragraph("AminoCalc - meal plan", h1),
+        Paragraph(
+            f"WHO/FAO/UNU 2007 adult pattern | body weight {weight_kg:.1f} kg | "
+            f"protein target {target_protein:.1f} g",
+            small,
+        ),
+        Spacer(1, 4),
+        Paragraph("Foods", h2),
+        make_table(foods, [100, 18, 24, 20, 20]),
+        Spacer(1, 6),
+        Paragraph(
+            f"<b>Amino acid score:</b> {aas_ratio * 100:.0f}% &nbsp; "
+            f"<b>Limiting:</b> {t(limiting_aa)} &nbsp; "
+            f"<b>Avg. digestibility:</b> {weighted_dig * 100:.0f}% &nbsp; "
+            f"<b>Digestibility-adjusted:</b> {adjusted_ratio * 100:.0f}%",
+            small,
+        ),
+        Paragraph(
+            f"<b>Fat / Carbs / Fiber:</b> {totals['fat']:.0f} / {totals['carbs']:.0f} / "
+            f"{totals['fiber']:.0f} g",
+            small,
+        ),
+        Paragraph("Essential amino acids", h2),
+        make_table(aa_rows, [45, 30, 35, 30, 40], highlight_row=hl),
+        Spacer(1, 8),
+        Paragraph(
+            "Educational tool, not medical advice. Values come from open food "
+            "composition databases and may be incomplete or estimated.",
+            small,
+        ),
+    ]
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=10 * mm,
+        rightMargin=10 * mm,
+        topMargin=10 * mm,
+        bottomMargin=10 * mm,
+        title="AminoCalc meal plan",
+    )
+    # KeepInFrame(shrink) гарантує одну сторінку
+    doc.build([KeepInFrame(doc.width, doc.height, story, mode="shrink")])
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------
@@ -507,6 +776,66 @@ if cart:
             "simplified estimate",
             delta_color="off",
         )
+
+    # ---------------------------------------------------------
+    # 7b. ДРУК (A4, 1 аркуш) ТА PDF
+    # ---------------------------------------------------------
+    export_totals = {
+        "protein": total_protein,
+        "cal": total_cals,
+        "fat": total_fat,
+        "carbs": total_carbs,
+        "fiber": total_fiber,
+    }
+    export_args = (
+        cart,
+        aa_totals_mg,
+        scores,
+        limiting_aa,
+        export_totals,
+        body_weight,
+        target_protein_total,
+        aas_ratio,
+        weighted_dig,
+        adjusted_ratio,
+    )
+
+    print_html = build_print_html(*export_args, auto_print=True)
+    # "</" всередині <script> закрив би тег — екрануємо
+    print_js = json.dumps(print_html).replace("</", "<\\/")
+
+    pr1, pr2 = st.columns(2)
+    with pr1:
+        components.html(
+            f"""
+            <button id="p" style="width:100%;padding:8px;border-radius:6px;
+              border:1px solid #888;background:transparent;color:inherit;
+              font-size:14px;cursor:pointer;">🖨️ Print (A4, 1 page)</button>
+            <script>
+              const doc = {print_js};
+              document.getElementById('p').onclick = function() {{
+                const w = window.open('', '_blank');
+                if (!w) {{ alert('Pop-up blocked — use the PDF button.'); return; }}
+                w.document.open();
+                w.document.write(doc);
+                w.document.close();
+              }};
+            </script>
+            """,
+            height=48,
+        )
+    with pr2:
+        try:
+            pdf_bytes = build_pdf_bytes(*export_args)
+            st.download_button(
+                "📄 Download PDF (A4)",
+                data=pdf_bytes,
+                file_name="aminocalc_meal_plan.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            st.caption(f"PDF unavailable: {exc}")
 
     if total_protein <= 0:
         st.info("The meal plan contains no protein, so no amino acid score can be computed.")
