@@ -16,13 +16,6 @@ import streamlit.components.v1 as components
 
 from presets import PRESETS
 
-try:  # необязательные дополнительные шаблоны (вегетарианские/веганские)
-    from presets_veg import VEG_PRESETS
-
-    PRESETS.update(VEG_PRESETS)
-except ImportError:
-    pass
-
 # ---------------------------------------------------------
 # 1. PAGE CONFIGURATION & MOBILE-FIRST ADAPTIVE STYLES
 # ---------------------------------------------------------
@@ -548,39 +541,65 @@ def make_cart_item(item, grams):
     return item
 
 
+_QUERY_STOPWORDS = {"or", "and", "in", "with", "of", "from", "the", "a", "to", "for"}
+
+
+def _word_matches(token, word):
+    """Совпадение по целому слову (с простой формой множественного числа),
+    чтобы «oil» не находилось внутри «broilers», а «egg» — в «eggplant»."""
+    if token == word or token in (word + "s", word + "es"):
+        return True
+    if word.endswith("y") and token == word[:-1] + "ies":
+        return True
+    return len(word) >= 6 and token.startswith(word)
+
+
 @st.cache_data(ttl=3600)
 def resolve_food_query(query):
     """Шаблоны могут ссылаться на продукт по тексту вместо fdc_id.
-    Первое слово запроса обязательно должно быть в названии (подстрока, поэтому
-    лучше писать в единственном числе: «chickpea» найдет и «chickpeas»).
-    Остальные слова необязательны, но повышают рейтинг совпадения; слова со
-    знаком «-» (например -flour) исключаются.
+    Первое слово запроса обязательно должно быть словом в названии; из остальных
+    слов должно совпасть хотя бы одно, и чем больше совпало, тем лучше. Слова со
+    знаком «-» (например -flour) исключаются. Совпадение — по целым словам.
     Дальше приоритет: есть данные по лизину -> USDA SR Legacy -> грейд A/B ->
     короткое имя. Возвращает fdc_id лучшего совпадения или None."""
-    words = [re.sub(r"[^\w\-]", "", w.lower()) for w in query.split()]
-    inc = [w for w in words if w and not w.startswith("-")]
-    exc = [w[1:] for w in words if w.startswith("-") and len(w) > 1]
+    raw = [w for w in re.split(r"[\s,;()]+", query.lower()) if w]
+    exc = [w[1:] for w in raw if w.startswith("-") and len(w) > 1]
+    inc = [w for w in raw if not w.startswith("-") and w not in _QUERY_STOPWORDS]
+    # дефисные слова в запросе («long-grain») разбиваем так же, как названия
+    inc = [p for w in inc for p in re.findall(r"\w+", w)]
     if not inc:
         return None
     required, optional = inc[0], inc[1:]
-    score = " + ".join(["CASE WHEN LOWER(name) LIKE ? THEN 1 ELSE 0 END"] * len(optional)) or "0"
-    where = ["LOWER(name) LIKE ?"] + ["LOWER(name) NOT LIKE ?"] * len(exc)
-    params = [f"%{w}%" for w in optional] + [f"%{w}%" for w in [required] + exc]
-    rows = db_rows(
-        f"""
-        SELECT fdc_id, ({score}) AS match_score FROM foods
-        WHERE {" AND ".join(where)}
-        ORDER BY
-          match_score DESC,
-          CASE WHEN lysine IS NOT NULL AND lysine > 0 THEN 0 ELSE 1 END,
-          CASE source_db WHEN 'usda_sr_legacy' THEN 0 ELSE 1 END,
-          CASE quality_grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END,
-          LENGTH(name)
-        LIMIT 1
+
+    candidates = db_rows(
+        """
+        SELECT fdc_id, name, source_db, quality_grade, lysine FROM foods
+        WHERE LOWER(name) LIKE ?
+        ORDER BY LENGTH(name) LIMIT 2000
         """,
-        params,
+        [f"%{required}%"],
     )
-    return rows[0]["fdc_id"] if rows else None
+
+    best_key, best_id = None, None
+    for r in candidates:
+        tokens = re.findall(r"\w+", str(r["name"]).lower())
+        if not any(_word_matches(t, required) for t in tokens):
+            continue
+        if any(any(_word_matches(t, w) for t in tokens) for w in exc):
+            continue
+        score = sum(1 for w in optional if any(_word_matches(t, w) for t in tokens))
+        if optional and score == 0:
+            continue
+        key = (
+            -score,
+            0 if (r.get("lysine") or 0) > 0 else 1,
+            0 if r["source_db"] == "usda_sr_legacy" else 1,
+            {"A": 0, "B": 1}.get(r["quality_grade"], 2),
+            len(str(r["name"])),
+        )
+        if best_key is None or key < best_key:
+            best_key, best_id = key, r["fdc_id"]
+    return best_id
 
 
 def load_preset(key, servings=1.0, replace=True):
