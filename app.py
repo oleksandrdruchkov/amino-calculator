@@ -121,6 +121,18 @@ def fmt(value, nd=1, unit=""):
 # ---------------------------------------------------------
 # 1b. ЕКСПОРТ: ДРУК НА ОДИН АРКУШ A4 ТА PDF
 # ---------------------------------------------------------
+STATUS_LABELS = {"lim": "Limiting", "low": "Below 100%", "ok": "Sufficient"}
+
+
+def aa_status(aa, req_met_pct, score_pct, limiting_aa, aas_ratio):
+    """Та сама логіка кольорів, що й на вкладці «Aminos»."""
+    if aa == limiting_aa and aas_ratio < 1.0:
+        return "lim"
+    if req_met_pct < 100.0 or score_pct < 100.0:
+        return "low"
+    return "ok"
+
+
 def build_print_html(
     cart,
     aa_totals_mg,
@@ -153,13 +165,15 @@ def build_print_html(
         actual = aa_totals_mg[aa]
         met = actual / daily_mg * 100 if daily_mg else 0
         score = scores.get(aa, 0) * 100
-        cls = "lim" if (aa == limiting_aa and aas_ratio < 1.0) else ""
+        status = aa_status(aa, met, score, limiting_aa, aas_ratio)
+        cls, label = {"lim": "lim", "low": "low", "ok": "ok"}[status], STATUS_LABELS[status]
         aa_rows += (
             f"<tr class='{cls}'><td>{e(aa)}</td>"
             f"<td class='n'>{actual:.0f}</td>"
             f"<td class='n'>{daily_mg:.0f}</td>"
             f"<td class='n'>{met:.0f}%</td>"
-            f"<td class='n'>{score:.0f}%</td></tr>"
+            f"<td class='n'>{score:.0f}%</td>"
+            f"<td>{label}</td></tr>"
         )
 
     total_grams = sum(it["grams"] for it in cart)
@@ -184,7 +198,11 @@ def build_print_html(
   th, td {{ border:1px solid #bbb; padding:2px 6px; text-align:left; }}
   th {{ background:#eee; }}
   td.n, th.n {{ text-align:right; }}
-  tr.lim td {{ background:#fde3e2; font-weight:bold; }}
+  tr.lim td {{ background:#f8c9c6; font-weight:bold; }}
+  tr.low td {{ background:#fff0b8; }}
+  tr.ok td {{ background:#d4efd6; }}
+  .legend span {{ display:inline-block; padding:1px 8px; margin-right:8px; border:1px solid #999; }}
+  .legend .l1 {{ background:#f8c9c6; }} .legend .l2 {{ background:#fff0b8; }} .legend .l3 {{ background:#d4efd6; }}
   .sum {{ display:flex; gap:18px; flex-wrap:wrap; margin:6px 0; }}
   .sum div b {{ display:block; font-size:13px; }}
   .foot {{ margin-top:10px; font-size:9px; color:#555; }}
@@ -214,8 +232,11 @@ protein target {target_protein:.1f} g</div>
 
 <h2>Essential amino acids</h2>
 <table><tr><th>Amino acid</th><th class='n'>Intake, mg</th><th class='n'>Daily target, mg</th>
-<th class='n'>Target met</th><th class='n'>Score vs pattern</th></tr>
+<th class='n'>Target met</th><th class='n'>Score vs pattern</th><th>Status</th></tr>
 {aa_rows}</table>
+<div class="legend" style="margin-top:6px">
+  <span class="l1">Limiting</span><span class="l2">Below 100%</span><span class="l3">Sufficient</span>
+</div>
 
 <div class="foot">Educational tool, not medical advice. Values come from open food
 composition databases and may be incomplete or estimated.</div>
@@ -270,7 +291,7 @@ def build_pdf_bytes(
     h1.fontSize, h1.alignment = 16, 0
     small.fontSize = 8
 
-    def make_table(data, col_w, highlight_row=None):
+    def make_table(data, col_w, row_colors=None, text_left_cols=(0,)):
         tbl = Table(data, colWidths=[w * mm for w in col_w], repeatRows=1)
         style = [
             ("FONTSIZE", (0, 0), (-1, -1), 8),
@@ -281,16 +302,12 @@ def build_pdf_bytes(
             ("TOPPADDING", (0, 0), (-1, -1), 2),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
         ]
-        if highlight_row:
-            style += [
-                (
-                    "BACKGROUND",
-                    (0, highlight_row),
-                    (-1, highlight_row),
-                    colors.HexColor("#fde3e2"),
-                ),
-                ("FONTNAME", (0, highlight_row), (-1, highlight_row), "Helvetica-Bold"),
-            ]
+        for col in text_left_cols:
+            style.append(("ALIGN", (col, 0), (col, -1), "LEFT"))
+        for row_i, (bg, bold) in (row_colors or {}).items():
+            style.append(("BACKGROUND", (0, row_i), (-1, row_i), colors.HexColor(bg)))
+            if bold:
+                style.append(("FONTNAME", (0, row_i), (-1, row_i), "Helvetica-Bold"))
         tbl.setStyle(TableStyle(style))
         return tbl
 
@@ -316,23 +333,38 @@ def build_pdf_bytes(
     )
 
     aa_rows = [
-        ["Amino acid", "Intake, mg", "Daily target, mg", "Target met", "Score vs pattern"]
+        [
+            "Amino acid",
+            "Intake, mg",
+            "Daily target, mg",
+            "Target met",
+            "Score vs pattern",
+            "Status",
+        ]
     ]
-    hl = None
+    row_colors = {}
+    pdf_palette = {
+        "lim": ("#f8c9c6", True),
+        "low": ("#fff0b8", False),
+        "ok": ("#d4efd6", False),
+    }
     for i, aa in enumerate(WHO_REFERENCE, start=1):
         daily = WHO_DAILY_REQ_PER_KG[aa] * weight_kg
         actual = aa_totals_mg[aa]
+        met = actual / daily * 100 if daily else 0
+        score = scores.get(aa, 0) * 100
+        status = aa_status(aa, met, score, limiting_aa, aas_ratio)
         aa_rows.append(
             [
                 t(aa),
                 f"{actual:.0f}",
                 f"{daily:.0f}",
-                f"{actual / daily * 100:.0f}%" if daily else "-",
-                f"{scores.get(aa, 0) * 100:.0f}%",
+                f"{met:.0f}%" if daily else "-",
+                f"{score:.0f}%",
+                STATUS_LABELS[status],
             ]
         )
-        if aa == limiting_aa and aas_ratio < 1.0:
-            hl = i
+        row_colors[i] = pdf_palette[status]
 
     story = [
         Paragraph("AminoCalc - meal plan", h1),
@@ -358,7 +390,14 @@ def build_pdf_bytes(
             small,
         ),
         Paragraph("Essential amino acids", h2),
-        make_table(aa_rows, [45, 30, 35, 30, 40], highlight_row=hl),
+        make_table(aa_rows, [36, 24, 32, 24, 34, 36], row_colors, text_left_cols=(0, 5)),
+        Spacer(1, 4),
+        Paragraph(
+            '<font backColor="#f8c9c6">&nbsp;Limiting&nbsp;</font> &nbsp; '
+            '<font backColor="#fff0b8">&nbsp;Below 100%&nbsp;</font> &nbsp; '
+            '<font backColor="#d4efd6">&nbsp;Sufficient&nbsp;</font>',
+            small,
+        ),
         Spacer(1, 8),
         Paragraph(
             "Educational tool, not medical advice. Values come from open food "
