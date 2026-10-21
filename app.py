@@ -530,7 +530,7 @@ def fetch_full_item(fdc_id):
 
 
 def fetch_items_by_ids(ids):
-    ids = list(ids)
+    ids = [i for i in ids if i is not None and not isinstance(i, (dict, list, tuple))]
     if not ids:
         return {}
     placeholders = ",".join("?" for _ in ids)
@@ -578,20 +578,29 @@ def resolve_food_query(query):
 
 
 def load_preset(key, servings=1.0, replace=True):
-    """Загружает шаблон в корзину. Элемент шаблона — (fdc_id ИЛИ текстовый запрос,
-    граммы, подпись). Возвращает подписи продуктов, которых нет в базе."""
+    """Загружает шаблон в корзину. Элемент шаблона — (продукт, граммы, подпись), где
+    «продукт» — fdc_id, текстовый запрос к базе или dict со значениями на 100 г
+    (для ингредиентов, которых нет в базе). Возвращает подписи ненайденных продуктов."""
     resolved = []
     for ref, grams, label in PRESETS[key]["items"]:
-        fdc_id = resolve_food_query(ref) if isinstance(ref, str) else ref
-        resolved.append((fdc_id, grams, label))
-    found = fetch_items_by_ids([i for i, _, _ in resolved if i is not None])
+        if isinstance(ref, str):
+            ref = resolve_food_query(ref)
+        resolved.append((ref, grams, label))
+    found = fetch_items_by_ids(
+        [r for r, _, _ in resolved if r is not None and not isinstance(r, dict)]
+    )
     new_items, missing = [], []
-    for fdc_id, grams, label in resolved:
-        row = found.get(fdc_id) if fdc_id is not None else None
+    for ref, grams, label in resolved:
+        portion = max(1, round(grams * servings))
+        if isinstance(ref, dict):
+            row = {"name": label, "source_db": "custom", "quality_grade": "manual", **ref}
+            new_items.append(make_cart_item(row, portion))
+            continue
+        row = found.get(ref) if ref is not None else None
         if row is None:
             missing.append(label)
         else:
-            new_items.append(make_cart_item(dict(row), max(1, round(grams * servings))))
+            new_items.append(make_cart_item(dict(row), portion))
     if replace:
         st.session_state.cart = new_items
     else:
