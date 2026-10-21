@@ -541,13 +541,46 @@ def make_cart_item(item, grams):
     return item
 
 
+@st.cache_data(ttl=3600)
+def resolve_food_query(query):
+    """Шаблоны могут ссылаться на продукт по тексту вместо fdc_id.
+    'kidney beans cooked boiled -canned' -> fdc_id лучшего совпадения или None.
+    Слова без минуса должны встречаться в названии, со знаком «-» — нет.
+    Приоритет: есть данные по лизину -> USDA SR Legacy -> грейд A/B -> короткое имя."""
+    words = [re.sub(r"[^\w\-]", "", w.lower()) for w in query.split()]
+    inc = [w for w in words if w and not w.startswith("-")]
+    exc = [w[1:] for w in words if w.startswith("-") and len(w) > 1]
+    if not inc:
+        return None
+    where = ["LOWER(name) LIKE ?"] * len(inc) + ["LOWER(name) NOT LIKE ?"] * len(exc)
+    params = [f"%{w}%" for w in inc + exc]
+    rows = db_rows(
+        f"""
+        SELECT fdc_id FROM foods
+        WHERE {" AND ".join(where)}
+        ORDER BY
+          CASE WHEN lysine IS NOT NULL AND lysine > 0 THEN 0 ELSE 1 END,
+          CASE source_db WHEN 'usda_sr_legacy' THEN 0 ELSE 1 END,
+          CASE quality_grade WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END,
+          LENGTH(name)
+        LIMIT 1
+        """,
+        params,
+    )
+    return rows[0]["fdc_id"] if rows else None
+
+
 def load_preset(key, servings=1.0, replace=True):
-    """Завантажує шаблон у кошик. Повертає підписи продуктів, яких немає в базі."""
-    items = PRESETS[key]["items"]
-    found = fetch_items_by_ids([i for i, _, _ in items])
+    """Загружает шаблон в корзину. Элемент шаблона — (fdc_id ИЛИ текстовый запрос,
+    граммы, подпись). Возвращает подписи продуктов, которых нет в базе."""
+    resolved = []
+    for ref, grams, label in PRESETS[key]["items"]:
+        fdc_id = resolve_food_query(ref) if isinstance(ref, str) else ref
+        resolved.append((fdc_id, grams, label))
+    found = fetch_items_by_ids([i for i, _, _ in resolved if i is not None])
     new_items, missing = [], []
-    for fdc_id, grams, label in items:
-        row = found.get(fdc_id)
+    for fdc_id, grams, label in resolved:
+        row = found.get(fdc_id) if fdc_id is not None else None
         if row is None:
             missing.append(label)
         else:
