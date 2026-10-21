@@ -704,28 +704,39 @@ else:
 # ---------------------------------------------------------
 st.subheader("1. Add Food Item")
 
-with st.expander("📋 Sample meals (templates)", expanded=False):
-    preset_key = st.selectbox(
-        "Template:",
-        options=list(PRESETS.keys()),
-        format_func=lambda k: PRESETS[k]["title"],
-        key="preset_choice",
-    )
-    preset = PRESETS[preset_key]
-    st.caption(preset["note"])
-    st.caption(" • ".join(f"{label} {grams} g" for _, grams, label in preset["items"]))
+st.markdown("##### 📋 Sample meals")
+pc_serv, pc_mode = st.columns([1, 2])
+with pc_serv:
     servings = st.number_input(
         "Servings", min_value=0.5, max_value=5.0, value=1.0, step=0.5, key="preset_servings"
     )
-    pc1, pc2 = st.columns(2)
-    with pc1:
-        if st.button("Load (replace plan)", key="preset_load", use_container_width=True):
-            st.session_state.preset_missing = load_preset(preset_key, servings, replace=True)
+with pc_mode:
+    preset_mode = st.radio(
+        "When loading a meal:",
+        ["Replace plan", "Add to plan"],
+        horizontal=True,
+        key="preset_mode",
+    )
+
+preset_cols = st.columns(2)
+for _i, (_pkey, _pdata) in enumerate(PRESETS.items()):
+    with preset_cols[_i % 2]:
+        if st.button(_pdata["title"], key=f"preset_btn_{_pkey}", use_container_width=True):
+            st.session_state.preset_missing = load_preset(
+                _pkey, servings, replace=(preset_mode == "Replace plan")
+            )
+            st.session_state.last_preset = _pkey
+            st.session_state.last_preset_servings = servings
             st.rerun()
-    with pc2:
-        if st.button("Add to plan", key="preset_add", use_container_width=True):
-            st.session_state.preset_missing = load_preset(preset_key, servings, replace=False)
-            st.rerun()
+
+_last = st.session_state.get("last_preset")
+if _last in PRESETS:
+    _p = PRESETS[_last]
+    _s = st.session_state.get("last_preset_servings", 1.0)
+    st.caption(f"**{_p['title']}** — {_p['note']}")
+    st.caption(
+        " • ".join(f"{label} {max(1, round(grams * _s))} g" for _, grams, label in _p["items"])
+    )
 
 _missing = st.session_state.pop("preset_missing", None)
 if _missing:
