@@ -718,16 +718,14 @@ with pc_mode:
         key="preset_mode",
     )
 
-preset_cols = st.columns(2)
-for _i, (_pkey, _pdata) in enumerate(PRESETS.items()):
-    with preset_cols[_i % 2]:
-        if st.button(_pdata["title"], key=f"preset_btn_{_pkey}", use_container_width=True):
-            st.session_state.preset_missing = load_preset(
-                _pkey, servings, replace=(preset_mode == "Replace plan")
-            )
-            st.session_state.last_preset = _pkey
-            st.session_state.last_preset_servings = servings
-            st.rerun()
+for _pkey, _pdata in PRESETS.items():
+    if st.button(_pdata["title"], key=f"preset_btn_{_pkey}", use_container_width=True):
+        st.session_state.preset_missing = load_preset(
+            _pkey, servings, replace=(preset_mode == "Replace plan")
+        )
+        st.session_state.last_preset = _pkey
+        st.session_state.last_preset_servings = servings
+        st.rerun()
 
 _last = st.session_state.get("last_preset")
 if _last in PRESETS:
