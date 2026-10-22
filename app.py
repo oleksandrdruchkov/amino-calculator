@@ -670,36 +670,6 @@ if "cart" not in st.session_state:
     st.session_state.cart = []
 
 # ---------------------------------------------------------
-# 4. ФІЛЬТР ГРЕЙДУ
-# ---------------------------------------------------------
-RELIABILITY_LABELS = {
-    "all": f"🌐 All grades ({len(foods_catalog):,} items)",
-    "standard": "🟡 Grades A & B",
-    "lab_only": "🟢 Grade A only",
-}
-selected_reliability = st.radio(
-    "Data quality grade:",
-    options=list(RELIABILITY_LABELS.keys()),
-    format_func=lambda x: RELIABILITY_LABELS[x],
-    index=0,
-    help=(
-        "Grades are assigned in the database and are not re-verified by this app. "
-        "Grade C generally means estimated or imputed values."
-    ),
-)
-st.caption(
-    f"Showing foods with verified amino acid data: {len(foods_catalog):,} of"
-    f" {catalog_total:,} records."
-)
-
-if selected_reliability == "lab_only":
-    filtered_by_grade = [r for r in foods_catalog if r["quality_grade"] == "A"]
-elif selected_reliability == "standard":
-    filtered_by_grade = [r for r in foods_catalog if r["quality_grade"] in ("A", "B")]
-else:
-    filtered_by_grade = foods_catalog
-
-# ---------------------------------------------------------
 # 5. ВИБІР БАЗИ ТА ПОШУК
 # ---------------------------------------------------------
 st.subheader("1. Add Food Item")
@@ -760,22 +730,50 @@ flag_map = {
     "fao_upulses": "🌐",
 }
 
-col_db, col_query = st.columns([1, 2])
+RELIABILITY_LABELS = {
+    "all": f"🌐 All grades ({len(foods_catalog):,} items)",
+    "standard": "🟡 Grades A & B",
+    "lab_only": "🟢 Grade A only",
+}
+
+col_grade, col_db = st.columns(2)
+with col_grade:
+    selected_reliability = st.selectbox(
+        "Data quality grade:",
+        options=list(RELIABILITY_LABELS.keys()),
+        format_func=lambda x: RELIABILITY_LABELS[x],
+        index=0,
+        help=(
+            "Grades are assigned in the database and are not re-verified by this app. "
+            "Grade C generally means estimated or imputed values."
+        ),
+    )
 with col_db:
     selected_db = st.selectbox(
         "Source DB:", options=list(db_choices.keys()), format_func=lambda x: db_choices[x]
     )
+
+if selected_reliability == "lab_only":
+    filtered_by_grade = [r for r in foods_catalog if r["quality_grade"] == "A"]
+elif selected_reliability == "standard":
+    filtered_by_grade = [r for r in foods_catalog if r["quality_grade"] in ("A", "B")]
+else:
+    filtered_by_grade = foods_catalog
 
 if selected_db == "all":
     active_catalog = filtered_by_grade
 else:
     active_catalog = [r for r in filtered_by_grade if r["source_db"] == selected_db]
 
-with col_query:
-    query = st.text_input(
-        "Search food item:",
-        placeholder=f"Type part of a name ({len(active_catalog):,} foods available)...",
-    )
+st.caption(
+    f"Showing foods with verified amino acid data: {len(active_catalog):,} of"
+    f" {catalog_total:,} records."
+)
+
+query = st.text_input(
+    "Search food item:",
+    placeholder=f"Type part of a name ({len(active_catalog):,} foods available)...",
+)
 
 terms = [t for t in query.lower().split() if t]
 matches = (
