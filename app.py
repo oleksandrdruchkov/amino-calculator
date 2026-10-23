@@ -9,6 +9,7 @@ import json
 import re
 from xml.sax.saxutils import escape as xml_escape
 
+import altair as alt
 import libsql_client
 import pandas as pd
 import streamlit as st
@@ -120,18 +121,18 @@ def fmt(value, nd=1, unit=""):
 
 
 # ---------------------------------------------------------
-# 1b. ЕКСПОРТ: ДРУК НА ОДИН АРКУШ A4 ТА PDF
+# 1b. ЕКСПОРТ: СТАТУСИ, ДРУК НА ОДИН АРКУШ A4 ТА PDF
 # ---------------------------------------------------------
-STATUS_LABELS = {"lim": "Limiting", "low": "Below 100%", "ok": "Sufficient"}
-
-
-def aa_status(aa, req_met_pct, score_pct, limiting_aa, aas_ratio):
-    """Та сама логіка кольорів, що й на вкладці «Aminos»."""
+def quality_status(aa, score_pct, limiting_aa, aas_ratio):
+    """Якість: не залежить від розміру порції."""
     if aa == limiting_aa and aas_ratio < 1.0:
         return "lim"
-    if req_met_pct < 100.0 or score_pct < 100.0:
-        return "low"
-    return "ok"
+    return "low" if score_pct < 100.0 else "ok"
+
+
+def quantity_status(met_pct):
+    """Кількість: % від добової норми для вашої ваги."""
+    return "ok" if met_pct >= 100.0 else "low"
 
 
 def build_print_html(
@@ -147,8 +148,7 @@ def build_print_html(
     adjusted_ratio,
     auto_print=False,
 ):
-    """Самодостатня HTML-сторінка формату A4. Якщо вміст вищий за аркуш,
-    він автоматично масштабується, щоб усе вмістилося на одній сторінці."""
+    """Самодостатня HTML-сторінка формату A4."""
     e = html.escape
 
     food_rows = "".join(
@@ -166,15 +166,16 @@ def build_print_html(
         actual = aa_totals_mg[aa]
         met = actual / daily_mg * 100 if daily_mg else 0
         score = scores.get(aa, 0) * 100
-        status = aa_status(aa, met, score, limiting_aa, aas_ratio)
+        q_stat = quality_status(aa, score, limiting_aa, aas_ratio)
+        n_stat = quantity_status(met)
+        row_cls = "r-lim" if q_stat == "lim" else ""
         aa_rows += (
-            f"<tr class='r-{status}'><td>{e(aa)}</td>"
+            f"<tr class='{row_cls}'><td>{e(aa)}</td>"
             f"<td class='n'>{actual:.0f}</td>"
             f"<td class='n'>{daily_mg:.0f}</td>"
             f"<td class='n'>{actual - daily_mg:+.0f}</td>"
-            f"<td class='n'>{met:.0f}%</td>"
-            f"<td class='n'>{score:.0f}%</td>"
-            f"<td class='s-{status}'>{STATUS_LABELS[status]}</td></tr>"
+            f"<td class='n s-{n_stat}'>{met:.0f}%</td>"
+            f"<td class='n s-{q_stat}'>{score:.0f}%</td></tr>"
         )
 
     total_grams = sum(it["grams"] for it in cart)
@@ -199,9 +200,8 @@ def build_print_html(
   th, td {{ border:1px solid #bbb; padding:2px 6px; text-align:left; }}
   th {{ background:#eee; }}
   td.n, th.n {{ text-align:right; }}
-  tr.r-lim td {{ background:#fdeceb; font-weight:bold; }}
-  tr.r-low td {{ background:#fff8e1; }}
-  td.s-lim {{ background:#ef9a9a !important; font-weight:bold; }}
+  tr.r-lim td {{ font-weight:bold; }}
+  td.s-lim {{ background:#ef9a9a !important; }}
   td.s-low {{ background:#ffe082 !important; }}
   td.s-ok  {{ background:#a5d6a7 !important; }}
   .legend span {{ display:inline-block; padding:1px 8px; margin-right:8px; border:1px solid #999; }}
@@ -234,17 +234,24 @@ protein target {target_protein:.1f} g</div>
 </div>
 
 <h2>Essential amino acids</h2>
-<table><tr><th>Amino acid</th><th class='n'>Intake, mg</th><th class='n'>Daily target, mg</th>
-<th class='n'>Surplus / deficit, mg</th><th class='n'>Target met</th>
-<th class='n'>Score vs pattern</th><th>Status</th></tr>
-{aa_rows}</table>
+<table>
+  <tr>
+    <th>Amino acid</th>
+    <th class='n'>Intake, mg</th>
+    <th class='n'>Daily target, mg</th>
+    <th class='n'>Surplus / deficit, mg</th>
+    <th class='n'>Quantity<br>% of daily target</th>
+    <th class='n'>Quality<br>score vs WHO pattern</th>
+  </tr>
+  {aa_rows}
+</table>
 <div class="legend" style="margin-top:6px">
-  <span class="l1">Limiting</span><span class="l2">Below 100%</span><span class="l3">Sufficient</span>
+  <span class="l1">Limiting</span><span class="l2">Below 100%</span><span class="l3">100% or more</span>
 </div>
 <div style="font-size:9px;color:#444;margin-top:4px">
-<b>Limiting</b> — lowest score vs the WHO pattern; it caps how much of the protein is fully used.
-<b>Below 100%</b> — daily target or pattern not reached. <b>Sufficient</b> — both reached.
-Target met = intake / daily target; score = amino acid per g protein / WHO pattern.
+  <b>Quantity</b> = intake / daily target for your body weight; it grows with the portion.
+  <b>Quality</b> = amino acid per g of protein / WHO pattern; it does not depend on portion size.
+  <b>Limiting</b> = the lowest quality score; it caps how much of the protein is fully used.
 </div>
 
 <div class="foot">Educational tool, not medical advice. Values come from open food
@@ -376,20 +383,19 @@ def build_pdf_bytes(
             "Intake, mg",
             "Daily target, mg",
             "Surplus/deficit, mg",
-            "Target met",
-            "Score vs pattern",
-            "Status",
+            "Quantity, % target",
+            "Quality, % pattern",
         ]
     ]
     row_colors, cell_colors = {}, {}
-    row_palette = {"lim": ("#fdeceb", True), "low": ("#fff8e1", False), "ok": (None, False)}
     cell_palette = {"lim": "#ef9a9a", "low": "#ffe082", "ok": "#a5d6a7"}
     for i, aa in enumerate(WHO_REFERENCE, start=1):
         daily = WHO_DAILY_REQ_PER_KG[aa] * weight_kg
         actual = aa_totals_mg[aa]
         met = actual / daily * 100 if daily else 0
         score = scores.get(aa, 0) * 100
-        status = aa_status(aa, met, score, limiting_aa, aas_ratio)
+        q_stat = quality_status(aa, score, limiting_aa, aas_ratio)
+        n_stat = quantity_status(met)
         aa_rows.append(
             [
                 t(aa),
@@ -398,11 +404,11 @@ def build_pdf_bytes(
                 f"{actual - daily:+.0f}",
                 f"{met:.0f}%" if daily else "-",
                 f"{score:.0f}%",
-                STATUS_LABELS[status],
             ]
         )
-        row_colors[i] = row_palette[status]
-        cell_colors[(6, i)] = cell_palette[status]
+        row_colors[i] = (None, q_stat == "lim")
+        cell_colors[(4, i)] = cell_palette[n_stat]
+        cell_colors[(5, i)] = cell_palette[q_stat]
 
     story = [
         Paragraph("AminoCalc - meal plan", h1),
@@ -430,24 +436,24 @@ def build_pdf_bytes(
         Paragraph("Essential amino acids", h2),
         make_table(
             aa_rows,
-            [27, 22, 27, 30, 22, 28, 28],
+            [30, 24, 30, 34, 36, 36],
             row_colors,
             cell_colors,
-            text_left_cols=(0, 6),
+            text_left_cols=(0,),
         ),
         Spacer(1, 4),
         Paragraph(
             '<font backColor="#ef9a9a">&nbsp;Limiting&nbsp;</font> &nbsp; '
             '<font backColor="#ffe082">&nbsp;Below 100%&nbsp;</font> &nbsp; '
-            '<font backColor="#a5d6a7">&nbsp;Sufficient&nbsp;</font>',
+            '<font backColor="#a5d6a7">&nbsp;100% or more&nbsp;</font>',
             small,
         ),
         Spacer(1, 3),
         Paragraph(
-            "<b>Limiting</b> - lowest score vs the WHO pattern; it caps how much of the "
-            "protein is fully used. <b>Below 100%</b> - daily target or pattern not "
-            "reached. <b>Sufficient</b> - both reached. Target met = intake / daily "
-            "target; score = amino acid per g protein / WHO pattern.",
+            "<b>Quantity</b> = intake / daily target for your body weight; it grows "
+            "with the portion. <b>Quality</b> = amino acid per g of protein / WHO "
+            "pattern; it does not depend on portion size. <b>Limiting</b> = the lowest "
+            "quality score; it caps how much of the protein is fully used.",
             small,
         ),
         Spacer(1, 8),
@@ -875,7 +881,6 @@ if cart:
     scores = {}
     if total_protein > 0:
         for aa, ref in WHO_REFERENCE.items():
-            # Зберігаємо точне значення float, щоб уникнути колізій при пошуку мінімуму
             scores[aa] = (aa_totals_mg[aa] / total_protein) / ref
 
     weighted_dig = (
@@ -1109,30 +1114,101 @@ if cart:
         return f"{sum_nutrient(col):.{nd}f}{unit}{mark}"
 
     with tab_aa:
-        BAR_COLORS = {"lim": "#ef5350", "low": "#ffb300", "ok": "#4caf50"}
-        bars = ""
+        st.info(
+            "**Quantity** — how much of your daily target you got (depends on portion size).  \n"
+            "**Quality** — amino acids per g of protein vs the WHO pattern (does not depend "
+            "on portion size). The lowest quality score is the **limiting** amino acid."
+        )
+
+        QTY_DOT = {"low": "🟡", "ok": "🟢"}
+        QUAL_DOT = {"lim": "🔴", "low": "🟡", "ok": "🟢"}
+        STAT_LABEL = {"lim": "Limiting", "low": "Below 100%", "ok": "100% or more"}
+        COLOR_MAP = {"Limiting": "#ef5350", "Below 100%": "#ffb300", "100% or more": "#4caf50"}
+
+        table_rows, chart_rows = [], []
         for aa in WHO_REFERENCE:
             daily_req_mg = WHO_DAILY_REQ_PER_KG[aa] * body_weight
             actual_mg = aa_totals_mg[aa]
-            req_met_pct = actual_mg / daily_req_mg * 100 if daily_req_mg > 0 else 0
+            met_pct = actual_mg / daily_req_mg * 100 if daily_req_mg > 0 else 0
             score_pct = scores.get(aa, 0) * 100
-            status = aa_status(aa, req_met_pct, score_pct, limiting_aa, aas_ratio)
-            width = min(req_met_pct, 100)
-            bars += (
-                '<div style="margin:8px 0">'
-                '<div style="display:flex;justify-content:space-between;font-size:0.9rem">'
-                f"<span><b>{html.escape(aa)}</b></span>"
-                f"<span>{actual_mg:.0f} / {daily_req_mg:.0f} mg &nbsp;<b>{req_met_pct:.0f}%</b>"
-                f' <span style="opacity:0.6">(score {score_pct:.0f}%)</span></span></div>'
-                '<div style="background:rgba(125,125,125,0.2);border-radius:4px;height:10px">'
-                f'<div style="width:{width:.0f}%;background:{BAR_COLORS[status]};'
-                'height:10px;border-radius:4px"></div></div></div>'
+            q_stat = quality_status(aa, score_pct, limiting_aa, aas_ratio)
+            n_stat = quantity_status(met_pct)
+
+            table_rows.append(
+                {
+                    "Amino Acid": aa,
+                    "Intake (mg)": f"{actual_mg:.0f}",
+                    "Daily target (mg)": f"{daily_req_mg:.0f}",
+                    "Quantity (% of target)": f"{QTY_DOT[n_stat]} {met_pct:.0f}%",
+                    "Quality (score vs pattern)": f"{QUAL_DOT[q_stat]} {score_pct:.0f}%",
+                }
             )
-        st.markdown(bars, unsafe_allow_html=True)
-        st.caption(
-            "🔴 Limiting | 🟡 Below 100% | 🟢 Sufficient. Bar = intake as % of the "
-            "daily target; score = amino acid per g protein vs the WHO pattern."
+            chart_rows.append(
+                {
+                    "Amino Acid": aa,
+                    "qty": met_pct,
+                    "qty_status": STAT_LABEL[n_stat],
+                    "qual": score_pct,
+                    "qual_status": STAT_LABEL[q_stat],
+                }
+            )
+
+        st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+        st.caption("🔴 Limiting | 🟡 Below 100% | 🟢 100% or more")
+
+        chart_df = pd.DataFrame(chart_rows)
+
+        def aa_chart(value_col, status_col, axis_title):
+            max_v = max(120.0, float(chart_df[value_col].max()) * 1.08)
+            bars = (
+                alt.Chart(chart_df)
+                .mark_bar()
+                .encode(
+                    y=alt.Y("Amino Acid:N", sort=None, title=None),
+                    x=alt.X(
+                        f"{value_col}:Q",
+                        title=axis_title,
+                        scale=alt.Scale(domain=[0, max_v]),
+                    ),
+                    color=alt.Color(
+                        f"{status_col}:N",
+                        legend=None,
+                        scale=alt.Scale(
+                            domain=list(COLOR_MAP), range=list(COLOR_MAP.values())
+                        ),
+                    ),
+                    tooltip=[
+                        "Amino Acid",
+                        alt.Tooltip(f"{value_col}:Q", format=".0f", title=axis_title),
+                    ],
+                )
+            )
+            line = (
+                alt.Chart(pd.DataFrame({"x": [100.0]}))
+                .mark_rule(color="#1e88e5", strokeWidth=2, strokeDash=[6, 4])
+                .encode(x="x:Q")
+            )
+            label = (
+                alt.Chart(pd.DataFrame({"x": [100.0], "t": ["100%"]}))
+                .mark_text(
+                    color="#1e88e5", align="left", dx=4, baseline="top", fontWeight="bold"
+                )
+                .encode(x="x:Q", y=alt.value(0), text="t:N")
+            )
+            return (bars + line + label).properties(height=28 * len(chart_df))
+
+        st.markdown("##### Quantity: % of your daily target")
+        st.altair_chart(
+            aa_chart("qty", "qty_status", "% of daily target (100% = target met)"),
+            use_container_width=True,
         )
+
+        st.markdown("##### Quality: score vs WHO pattern")
+        st.altair_chart(
+            aa_chart("qual", "qual_status", "% of WHO pattern (100% = pattern met)"),
+            use_container_width=True,
+        )
+        st.caption("Dashed blue line = 100%.")
 
         AA_EXTRA_GROUPS = {
             "Conditionally essential": [
