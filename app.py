@@ -271,10 +271,7 @@ _PUNCT_MAP = str.maketrans(
 
 
 def pdf_name(name):
-    """Назва продукту для PDF зі стандартним шрифтом (Latin-1).
-    Дужки лише з не-латинським текстом (корейські/японські/китайські
-    переклади назв) прибираються, решта не-Latin-1 символів відкидається,
-    тож замість «???» виходить чиста англомовна назва."""
+    """Назва продукту для PDF зі стандартним шрифтом (Latin-1)."""
     s = str(name).translate(_PUNCT_MAP)
     prev = None
     while prev != s:
@@ -304,10 +301,10 @@ def build_pdf_bytes(
     weighted_dig,
     adjusted_ratio,
 ):
-    """PDF формату A4 на одну сторінку (вміст стискається, якщо не влазить)."""
+    """PDF формату A4 на одну сторінку."""
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
     from reportlab.platypus import (
         KeepInFrame,
@@ -319,14 +316,12 @@ def build_pdf_bytes(
     )
 
     def t(s):
-        # Стандартні шрифти PDF знають лише latin-1
         return str(s).encode("latin-1", "replace").decode("latin-1")
 
     styles = getSampleStyleSheet()
     h1, h2, small = styles["Title"], styles["Heading3"], styles["BodyText"]
     h1.fontSize, h1.alignment = 16, 0
     small.fontSize = 8
-    from reportlab.lib.styles import ParagraphStyle
 
     cell = ParagraphStyle("cell", parent=small, fontSize=8, leading=9.5)
 
@@ -473,7 +468,6 @@ def build_pdf_bytes(
         bottomMargin=10 * mm,
         title="AminoCalc meal plan",
     )
-    # KeepInFrame(shrink) гарантує одну сторінку
     doc.build([KeepInFrame(doc.width, doc.height, story, mode="shrink")])
     return buf.getvalue()
 
@@ -532,8 +526,6 @@ def fetch_items_by_ids(ids):
 
 
 def make_cart_item(item, grams):
-    """Готує елемент кошика. uid потрібен, щоб ключі віджетів не збивалися
-    після видалення чи заміни продуктів."""
     st.session_state.uid_counter = st.session_state.get("uid_counter", 0) + 1
     item["grams"] = grams
     item["dig"] = float(item.get("digestibility") or 1.0)
@@ -545,8 +537,6 @@ _QUERY_STOPWORDS = {"or", "and", "in", "with", "of", "from", "the", "a", "to", "
 
 
 def _word_matches(token, word):
-    """Совпадение по целому слову (с простой формой множественного числа),
-    чтобы «oil» не находилось внутри «broilers», а «egg» — в «eggplant»."""
     if token == word or token in (word + "s", word + "es"):
         return True
     if word.endswith("y") and token == word[:-1] + "ies":
@@ -556,16 +546,9 @@ def _word_matches(token, word):
 
 @st.cache_data(ttl=3600)
 def resolve_food_query(query):
-    """Шаблоны могут ссылаться на продукт по тексту вместо fdc_id.
-    Первое слово запроса обязательно должно быть словом в названии; из остальных
-    слов должно совпасть хотя бы одно, и чем больше совпало, тем лучше. Слова со
-    знаком «-» (например -flour) исключаются. Совпадение — по целым словам.
-    Дальше приоритет: есть данные по лизину -> USDA SR Legacy -> грейд A/B ->
-    короткое имя. Возвращает fdc_id лучшего совпадения или None."""
     raw = [w for w in re.split(r"[\s,;()]+", query.lower()) if w]
     exc = [w[1:] for w in raw if w.startswith("-") and len(w) > 1]
     inc = [w for w in raw if not w.startswith("-") and w not in _QUERY_STOPWORDS]
-    # дефисные слова в запросе («long-grain») разбиваем так же, как названия
     inc = [p for w in inc for p in re.findall(r"\w+", w)]
     if not inc:
         return None
@@ -603,9 +586,6 @@ def resolve_food_query(query):
 
 
 def load_preset(key, servings=1.0, replace=True):
-    """Загружает шаблон в корзину. Элемент шаблона — (продукт, граммы, подпись), где
-    «продукт» — fdc_id, текстовый запрос к базе или dict со значениями на 100 г
-    (для ингредиентов, которых нет в базе). Возвращает подписи ненайденных продуктов."""
     resolved = []
     for ref, grams, label in PRESETS[key]["items"]:
         if isinstance(ref, str):
@@ -895,7 +875,8 @@ if cart:
     scores = {}
     if total_protein > 0:
         for aa, ref in WHO_REFERENCE.items():
-            scores[aa] = round((aa_totals_mg[aa] / total_protein) / ref, 2)
+            # Зберігаємо точне значення float, щоб уникнути колізій при пошуку мінімуму
+            scores[aa] = (aa_totals_mg[aa] / total_protein) / ref
 
     weighted_dig = (
         sum(
@@ -981,7 +962,6 @@ if cart:
     )
 
     print_html = build_print_html(*export_args, auto_print=True)
-    # "</" всередині <script> закрив би тег — екрануємо
     print_js = json.dumps(print_html).replace("</", "<\\/")
 
     pr1, pr2 = st.columns(2)
@@ -1115,7 +1095,7 @@ if cart:
         )
 
     # ---------------------------------------------------------
-    # 8. ВКЛАДКИ З АНАЛІТИКОЮ ТА ЛОКАЛЬНИМИ ЗАСТЕРЕЖЕННЯМИ
+    # 8. ВКЛАДКИ З АНАЛІТИКОЮ
     # ---------------------------------------------------------
     tab_aa, tab_macros, tab_min, tab_vit, tab_fats = st.tabs(
         ["🥩 Aminos", "🍞 Macros", "⚡ Minerals", "💊 Vitamins", "🥑 Lipids"]
@@ -1129,45 +1109,56 @@ if cart:
         return f"{sum_nutrient(col):.{nd}f}{unit}{mark}"
 
     with tab_aa:
-        st.markdown(
-            f"##### Daily Amino Acid Targets (**{body_weight:.1f} kg** body weight):"
-        )
-        aa_data = []
+        BAR_COLORS = {"lim": "#ef5350", "low": "#ffb300", "ok": "#4caf50"}
+        bars = ""
         for aa in WHO_REFERENCE:
             daily_req_mg = WHO_DAILY_REQ_PER_KG[aa] * body_weight
             actual_mg = aa_totals_mg[aa]
             req_met_pct = actual_mg / daily_req_mg * 100 if daily_req_mg > 0 else 0
             score_pct = scores.get(aa, 0) * 100
-            if aa == limiting_aa and min_score < 1.0:
-                dot = "🔴"
-            elif req_met_pct < 100.0 or score_pct < 100.0:
-                dot = "🟡"
-            else:
-                dot = "🟢"
-            aa_data.append(
-                {
-                    "": dot,
-                    "Amino Acid": aa,
-                    "Intake (g)": f"{actual_mg / 1000:.2f}g",
-                    "Daily Target (g)": f"{daily_req_mg / 1000:.2f}g",
-                    "Daily Met (%)": f"{req_met_pct:.0f}%",
-                    "Score vs pattern": f"{score_pct:.0f}%",
-                }
+            status = aa_status(aa, req_met_pct, score_pct, limiting_aa, aas_ratio)
+            width = min(req_met_pct, 100)
+            bars += (
+                '<div style="margin:8px 0">'
+                '<div style="display:flex;justify-content:space-between;font-size:0.9rem">'
+                f"<span><b>{html.escape(aa)}</b></span>"
+                f"<span>{actual_mg:.0f} / {daily_req_mg:.0f} mg &nbsp;<b>{req_met_pct:.0f}%</b>"
+                f' <span style="opacity:0.6">(score {score_pct:.0f}%)</span></span></div>'
+                '<div style="background:rgba(125,125,125,0.2);border-radius:4px;height:10px">'
+                f'<div style="width:{width:.0f}%;background:{BAR_COLORS[status]};'
+                'height:10px;border-radius:4px"></div></div></div>'
             )
-        st.dataframe(pd.DataFrame(aa_data), use_container_width=True, hide_index=True)
-        st.caption("🔴 Limiting | 🟡 Below 100% | 🟢 Sufficient")
+        st.markdown(bars, unsafe_allow_html=True)
+        st.caption(
+            "🔴 Limiting | 🟡 Below 100% | 🟢 Sufficient. Bar = intake as % of the "
+            "daily target; score = amino acid per g protein vs the WHO pattern."
+        )
 
-        st.write("##### Daily Requirement Coverage (% of target):")
-        req_chart_df = pd.DataFrame(
-            {
-                "Amino Acid": list(WHO_REFERENCE.keys()),
-                "Coverage (%)": [
-                    aa_totals_mg[aa] / (WHO_DAILY_REQ_PER_KG[aa] * body_weight) * 100
-                    for aa in WHO_REFERENCE
-                ],
-            }
-        ).set_index("Amino Acid")
-        st.bar_chart(req_chart_df)
+        AA_EXTRA_GROUPS = {
+            "Conditionally essential": [
+                ("Arginine", "arginine"),
+                ("Glycine", "glycine"),
+                ("Proline", "proline"),
+            ],
+            "Non-essential": [
+                ("Alanine", "alanine"),
+                ("Aspartic acid", "aspartic_acid"),
+                ("Glutamic acid", "glutamic_acid"),
+                ("Serine", "serine"),
+            ],
+        }
+
+        with st.expander("Other amino acids (no WHO target)"):
+            for group, items in AA_EXTRA_GROUPS.items():
+                st.markdown(f"**{group}**")
+                for label, col in items:
+                    have, n = coverage(col)
+                    if have == 0:
+                        st.write(f"- {label}: no data")
+                    else:
+                        mark = "*" if have < n else ""
+                        st.write(f"- {label}: {sum_nutrient(col) * 1000:.0f} mg{mark}")
+            st.caption("* = value missing for some foods in the plan.")
 
     with tab_macros:
         mc1, mc2 = st.columns(2)
@@ -1224,7 +1215,6 @@ if cart:
         st.caption("⚪ no data for any food in the plan | * partial data")
 
     with tab_min:
-        # Локальна примітка (Варіант 2)
         st.caption(
             "ℹ️ **Note on minerals:** Secondary metrics. National databases vary in"
             " testing breadth (e.g. German BLS omits Selenium). 'No data' means no"
@@ -1247,7 +1237,6 @@ if cart:
         )
 
     with tab_vit:
-        # Локальна примітка (Варіант 2)
         st.caption(
             "ℹ️ **Note on vitamins:** Secondary metrics. Testing coverage differs"
             " across national tables. Amino acid analysis is 100% complete across all"
@@ -1285,8 +1274,15 @@ if cart:
             ).set_index("Fat Type")
             st.bar_chart(fat_df)
 
+# ---------------------------------------------------------
+# ПІДВАЛ (ВІДОБРАЖАЄТЬСЯ ЗАВЖДИ)
+# ---------------------------------------------------------
 st.divider()
 st.caption(
     "Educational tool, not medical advice. Values come from open food composition"
     " databases and may be incomplete or estimated."
+)
+st.markdown(
+    "Suggestions and feedback: "
+    "[tributylborane@gmail.com](mailto:tributylborane@gmail.com)"
 )
