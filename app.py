@@ -92,7 +92,7 @@ AA_COLS = [c for cols in AA_GROUP_COLS.values() for c in cols]
 
 # Добові стандарти (DRI / RDA / AI та безпечні верхні межі UL)
 # target = цільовий мінімум споживання (RDA/AI)
-# ul = допустима верхня межа споживання (Tolerable Upper Intake Level), None якщо немає
+# ul = допустима верхня безпечна межа споживання (Tolerable Upper Intake Level), None якщо не встановлено
 # is_ceiling = нутрієнт є суто межею обмеження (наприклад, натрій)
 NUTRIENT_STANDARDS = {
     # Мінерали
@@ -1305,6 +1305,10 @@ if cart:
             val = sum_nutrient(key)
             mark = "*" if have < n else ""
 
+            # Динамічне визначення точності: якщо ціль або поточна вага < 5.0, показуємо 2 знаки
+            threshold = target if target is not None else ul
+            decimals = 2 if (threshold is not None and threshold < 5.0) or val < 1.0 else 1
+
             if is_ceiling:
                 # Виключно межа обмеження (натрій)
                 pct_ul = (val / ul) * 100
@@ -1319,7 +1323,7 @@ if cart:
                 pct_target = (val / target) * 100 if target else 0
                 if ul is not None and val > ul:
                     dot = "🔴"
-                    status_text = f"⚠️ >UL ({val:.0f}/{ul:.0f} {unit})"
+                    status_text = f"⚠️ >UL ({val:.{decimals}f}/{ul:.0f} {unit})"
                 elif pct_target >= 100:
                     dot = "🟢"
                     status_text = f"{pct_target:.0f}%"
@@ -1334,7 +1338,7 @@ if cart:
                 {
                     "": dot,
                     name_header: label,
-                    "Intake": f"{val:.1f} {unit}{mark}",
+                    "Intake": f"{val:.{decimals}f} {unit}{mark}",
                     "Daily Reference": ref_str,
                     "Status / Met": status_text,
                 }
