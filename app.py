@@ -90,30 +90,36 @@ AA_GROUP_COLS = {
 }
 AA_COLS = [c for cols in AA_GROUP_COLS.values() for c in cols]
 
-DAILY_VALUES = {
-    "calcium": 1000.0,
-    "iron": 14.0,
-    "magnesium": 400.0,
-    "phosphorus": 700.0,
-    "potassium": 3500.0,
-    "sodium": 2000.0,
-    "zinc": 11.0,
-    "copper": 0.9,
-    "selenium": 55.0,
-    "vitamin_c": 90.0,
-    "thiamin_b1": 1.2,
-    "riboflavin_b2": 1.3,
-    "niacin_b3": 16.0,
-    "vitamin_b6": 1.7,
-    "folate_b9": 400.0,
-    "vitamin_b12": 2.4,
-    "vitamin_a_rae": 900.0,
-    "vitamin_e": 15.0,
-    "vitamin_d": 15.0,
-    "vitamin_k": 120.0,
-    "fiber": 30.0,
+# Добові стандарти (DRI / RDA / AI та безпечні верхні межі UL)
+# target = цільовий мінімум споживання (RDA/AI)
+# ul = допустима верхня межа споживання (Tolerable Upper Intake Level), None якщо немає
+# is_ceiling = нутрієнт є суто межею обмеження (наприклад, натрій)
+NUTRIENT_STANDARDS = {
+    # Мінерали
+    "calcium": {"target": 1000.0, "ul": 2500.0, "unit": "mg"},
+    "iron": {"target": 14.0, "ul": 45.0, "unit": "mg"},
+    "magnesium": {"target": 400.0, "ul": None, "unit": "mg"},  # UL 350 мг лише для фарм. добавок
+    "phosphorus": {"target": 700.0, "ul": 4000.0, "unit": "mg"},
+    "potassium": {"target": 3500.0, "ul": None, "unit": "mg"},  # Немає UL з їжі
+    "sodium": {"target": None, "ul": 2000.0, "unit": "mg", "is_ceiling": True},
+    "zinc": {"target": 11.0, "ul": 40.0, "unit": "mg"},
+    "copper": {"target": 0.9, "ul": 10.0, "unit": "mg"},
+    "selenium": {"target": 55.0, "ul": 400.0, "unit": "mcg"},
+    # Вітаміни
+    "vitamin_c": {"target": 90.0, "ul": 2000.0, "unit": "mg"},
+    "thiamin_b1": {"target": 1.2, "ul": None, "unit": "mg"},  # Немає UL
+    "riboflavin_b2": {"target": 1.3, "ul": None, "unit": "mg"},  # Немає UL
+    "niacin_b3": {"target": 16.0, "ul": 35.0, "unit": "mg"},
+    "vitamin_b6": {"target": 1.7, "ul": 100.0, "unit": "mg"},
+    "folate_b9": {"target": 400.0, "ul": 1000.0, "unit": "mcg"},
+    "vitamin_b12": {"target": 2.4, "ul": None, "unit": "mcg"},  # Немає UL
+    "vitamin_a_rae": {"target": 900.0, "ul": 3000.0, "unit": "mcg"},
+    "vitamin_e": {"target": 15.0, "ul": 1000.0, "unit": "mg"},
+    "vitamin_d": {"target": 15.0, "ul": 100.0, "unit": "mcg"},
+    "vitamin_k": {"target": 120.0, "ul": None, "unit": "mcg"},  # Немає UL
+    # Клітковина
+    "fiber": {"target": 30.0, "ul": None, "unit": "g"},  # Немає UL
 }
-LIMIT_NUTRIENTS = {"sodium"}
 
 
 def fmt(value, nd=1, unit=""):
@@ -1164,7 +1170,17 @@ if cart:
                 alt.Chart(chart_df)
                 .mark_bar()
                 .encode(
-                    y=alt.Y("Amino Acid:N", sort=None, title=None),
+                    y=alt.Y(
+                        "Amino Acid:N",
+                        sort=None,
+                        title=None,
+                        axis=alt.Axis(
+                            labelOverlap=False,
+                            labelLimit=220,
+                            labelFontSize=12,
+                            labelPadding=6,
+                        ),
+                    ),
                     x=alt.X(
                         f"{value_col}:Q",
                         title=axis_title,
@@ -1195,7 +1211,7 @@ if cart:
                 )
                 .encode(x="x:Q", y=alt.value(0), text="t:N")
             )
-            return (bars + line + label).properties(height=28 * len(chart_df))
+            return (bars + line + label).properties(height=32 * len(chart_df))
 
         st.markdown("##### Quantity: % of your daily target")
         st.altair_chart(
@@ -1244,11 +1260,12 @@ if cart:
         with mc2:
             st.metric("Carbohydrates", value_with_coverage("carbs", 1, " g"))
             fiber_have, _ = coverage("fiber")
+            fiber_target = NUTRIENT_STANDARDS["fiber"]["target"]
             st.metric(
                 "Dietary Fiber",
                 value_with_coverage("fiber", 1, " g"),
                 (
-                    f"{min(total_fiber / DAILY_VALUES['fiber'] * 100, 100):.0f}% RDA"
+                    f"{min(total_fiber / fiber_target * 100, 100):.0f}% RDA"
                     if fiber_have
                     else None
                 ),
@@ -1257,38 +1274,77 @@ if cart:
 
     def render_micro_table(items, name_header):
         rows = []
-        for label, key, unit in items:
+        for label, key in items:
+            spec = NUTRIENT_STANDARDS[key]
+            unit = spec["unit"]
+            target = spec.get("target")
+            ul = spec.get("ul")
+            is_ceiling = spec.get("is_ceiling", False)
+
+            # Формування стовпчика цілей / меж
+            if is_ceiling:
+                ref_str = f"max {ul:.0f} {unit}"
+            elif ul is not None:
+                ref_str = f"{target:.1f} – {ul:.0f} {unit}"
+            else:
+                ref_str = f"min {target:.1f} {unit} (no UL)"
+
             have, n = coverage(key)
-            target = DAILY_VALUES[key]
             if have == 0:
                 rows.append(
                     {
                         "": "⚪",
                         name_header: label,
                         "Intake": "no data",
-                        "Target": f"{target:.0f} {unit}",
-                        "Met": "—",
+                        "Daily Reference": ref_str,
+                        "Status / Met": "—",
                     }
                 )
                 continue
+
             val = sum_nutrient(key)
-            pct = val / target * 100
-            if key in LIMIT_NUTRIENTS:
-                dot = "🟢" if pct <= 100 else "🔴"
-            else:
-                dot = "🟢" if pct >= 100 else ("🟡" if pct >= 70 else "🔴")
             mark = "*" if have < n else ""
+
+            if is_ceiling:
+                # Виключно межа обмеження (натрій)
+                pct_ul = (val / ul) * 100
+                if val <= ul:
+                    dot = "🟢"
+                    status_text = f"{pct_ul:.0f}% of max"
+                else:
+                    dot = "🔴"
+                    status_text = f"⚠️ {pct_ul:.0f}% (Over limit)"
+            else:
+                # Звичайний нутрієнт із цільовою нормою
+                pct_target = (val / target) * 100 if target else 0
+                if ul is not None and val > ul:
+                    dot = "🔴"
+                    status_text = f"⚠️ >UL ({val:.0f}/{ul:.0f} {unit})"
+                elif pct_target >= 100:
+                    dot = "🟢"
+                    status_text = f"{pct_target:.0f}%"
+                elif pct_target >= 70:
+                    dot = "🟡"
+                    status_text = f"{pct_target:.0f}%"
+                else:
+                    dot = "🔴"
+                    status_text = f"{pct_target:.0f}%"
+
             rows.append(
                 {
                     "": dot,
-                    name_header: label + (" (limit)" if key in LIMIT_NUTRIENTS else ""),
+                    name_header: label,
                     "Intake": f"{val:.1f} {unit}{mark}",
-                    "Target": f"{target:.0f} {unit}",
-                    "Met": f"{pct:.0f}%",
+                    "Daily Reference": ref_str,
+                    "Status / Met": status_text,
                 }
             )
+
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        st.caption("⚪ no data for any food in the plan | * partial data")
+        st.caption(
+            "⚪ no data for any food in the plan | * partial data | "
+            "**Reference:** Target – Upper Limit (UL) where applicable; 'no UL' indicates no adverse limit from food."
+        )
 
     with tab_min:
         st.caption(
@@ -1299,15 +1355,15 @@ if cart:
         )
         render_micro_table(
             [
-                ("Calcium", "calcium", "mg"),
-                ("Iron", "iron", "mg"),
-                ("Magnesium", "magnesium", "mg"),
-                ("Phosphorus", "phosphorus", "mg"),
-                ("Potassium", "potassium", "mg"),
-                ("Sodium", "sodium", "mg"),
-                ("Zinc", "zinc", "mg"),
-                ("Copper", "copper", "mg"),
-                ("Selenium", "selenium", "mcg"),
+                ("Calcium", "calcium"),
+                ("Iron", "iron"),
+                ("Magnesium", "magnesium"),
+                ("Phosphorus", "phosphorus"),
+                ("Potassium", "potassium"),
+                ("Sodium", "sodium"),
+                ("Zinc", "zinc"),
+                ("Copper", "copper"),
+                ("Selenium", "selenium"),
             ],
             "Mineral",
         )
@@ -1320,17 +1376,17 @@ if cart:
         )
         render_micro_table(
             [
-                ("Vitamin C", "vitamin_c", "mg"),
-                ("Thiamin (B1)", "thiamin_b1", "mg"),
-                ("Riboflavin (B2)", "riboflavin_b2", "mg"),
-                ("Niacin (B3)", "niacin_b3", "mg"),
-                ("Vitamin B6", "vitamin_b6", "mg"),
-                ("Folate (B9)", "folate_b9", "mcg"),
-                ("Vitamin B12", "vitamin_b12", "mcg"),
-                ("Vitamin A (RAE)", "vitamin_a_rae", "mcg"),
-                ("Vitamin E", "vitamin_e", "mg"),
-                ("Vitamin D", "vitamin_d", "mcg"),
-                ("Vitamin K", "vitamin_k", "mcg"),
+                ("Vitamin C", "vitamin_c"),
+                ("Thiamin (B1)", "thiamin_b1"),
+                ("Riboflavin (B2)", "riboflavin_b2"),
+                ("Niacin (B3)", "niacin_b3"),
+                ("Vitamin B6", "vitamin_b6"),
+                ("Folate (B9)", "folate_b9"),
+                ("Vitamin B12", "vitamin_b12"),
+                ("Vitamin A (RAE)", "vitamin_a_rae"),
+                ("Vitamin E", "vitamin_e"),
+                ("Vitamin D", "vitamin_d"),
+                ("Vitamin K", "vitamin_k"),
             ],
             "Vitamin",
         )
