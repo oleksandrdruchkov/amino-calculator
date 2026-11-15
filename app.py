@@ -230,7 +230,7 @@ def build_print_html(
 </style></head><body><div id="page">
 <h1>AminoCalc — meal plan</h1>
 <div>WHO/FAO/UNU 2007 adult pattern • body weight {weight_kg:.1f} kg •
-protein target {target_protein:.1f} g</div>
+daily protein target {target_protein:.1f} g</div>
 
 <h2>Foods</h2>
 <table><tr><th>Food</th><th class='n'>g</th><th class='n'>Protein, g</th>
@@ -399,7 +399,7 @@ def build_pdf_bytes(
             "Intake, mg",
             "Daily target, mg",
             "Surplus/deficit\nvs daily target, mg",
-            "Quantity, % target",
+            "Quantity,\n% of daily target",
             "Quality, % pattern",
         ]
     ]
@@ -430,7 +430,7 @@ def build_pdf_bytes(
         Paragraph("AminoCalc - meal plan", h1),
         Paragraph(
             f"WHO/FAO/UNU 2007 adult pattern | body weight {weight_kg:.1f} kg | "
-            f"protein target {target_protein:.1f} g",
+            f"daily protein target {target_protein:.1f} g",
             small,
         ),
         Spacer(1, 4),
@@ -933,7 +933,7 @@ if cart:
         st.metric(
             "Total Protein",
             f"{total_protein:.1f} g",
-            f"Target: {target_protein_total:.1f} g",
+            f"Daily target: {target_protein_total:.1f} g",
         )
     with r1c2:
         st.metric(
@@ -1156,7 +1156,7 @@ if cart:
                     "Amino Acid": aa,
                     "Intake (mg)": f"{actual_mg:.0f}",
                     "Daily target (mg)": f"{daily_req_mg:.0f}",
-                    "Quantity (% of target)": f"{QTY_DOT[n_stat]} {met_pct:.0f}%",
+                    "Quantity (% of daily target)": f"{QTY_DOT[n_stat]} {met_pct:.0f}%",
                     "Quality (score vs pattern)": f"{QUAL_DOT[q_stat]} {score_pct:.0f}%",
                 }
             )
