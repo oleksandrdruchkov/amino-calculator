@@ -129,16 +129,25 @@ def fmt(value, nd=1, unit=""):
 # ---------------------------------------------------------
 # 1b. ЕКСПОРТ: СТАТУСИ, ДРУК НА ОДИН АРКУШ A4 ТА PDF
 # ---------------------------------------------------------
+def shown_pct(pct):
+    """Відсоток так, як він показаний у таблиці (без десяткових).
+
+    Колір клітинки рахуємо від цього ж числа, щоб 99.9% не показувалось
+    як «100%» з підсвіткою «Below 100%».
+    """
+    return int(f"{pct:.0f}")
+
+
 def quality_status(aa, score_pct, limiting_aa, aas_ratio):
     """Якість: не залежить від розміру порції."""
     if aa == limiting_aa and aas_ratio < 1.0:
         return "lim"
-    return "low" if score_pct < 100.0 else "ok"
+    return "low" if shown_pct(score_pct) < 100 else "ok"
 
 
 def quantity_status(met_pct):
     """Кількість: % від добової норми для вашої ваги."""
-    return "ok" if met_pct >= 100.0 else "low"
+    return "ok" if shown_pct(met_pct) >= 100 else "low"
 
 
 def build_print_html(
@@ -245,7 +254,7 @@ protein target {target_protein:.1f} g</div>
     <th>Amino acid</th>
     <th class='n'>Intake, mg</th>
     <th class='n'>Daily target, mg</th>
-    <th class='n'>Surplus / deficit, mg</th>
+    <th class='n'>Surplus / deficit<br>vs daily target, mg</th>
     <th class='n'>Quantity<br>% of daily target</th>
     <th class='n'>Quality<br>score vs WHO pattern</th>
   </tr>
@@ -256,6 +265,7 @@ protein target {target_protein:.1f} g</div>
 </div>
 <div style="font-size:9px;color:#444;margin-top:4px">
   <b>Quantity</b> = intake / daily target for your body weight; it grows with the portion.
+  <b>Surplus / deficit</b> = intake minus the target for the whole day, not for one meal.
   <b>Quality</b> = amino acid per g of protein / WHO pattern; it does not depend on portion size.
   <b>Limiting</b> = the lowest quality score; it caps how much of the protein is fully used.
 </div>
@@ -388,7 +398,7 @@ def build_pdf_bytes(
             "Amino acid",
             "Intake, mg",
             "Daily target, mg",
-            "Surplus/deficit, mg",
+            "Surplus/deficit\nvs daily target, mg",
             "Quantity, % target",
             "Quality, % pattern",
         ]
@@ -457,7 +467,8 @@ def build_pdf_bytes(
         Spacer(1, 3),
         Paragraph(
             "<b>Quantity</b> = intake / daily target for your body weight; it grows "
-            "with the portion. <b>Quality</b> = amino acid per g of protein / WHO "
+            "with the portion. <b>Surplus/deficit</b> = intake minus the target for "
+            "the whole day, not for one meal. <b>Quality</b> = amino acid per g of protein / WHO "
             "pattern; it does not depend on portion size. <b>Limiting</b> = the lowest "
             "quality score; it caps how much of the protein is fully used.",
             small,
