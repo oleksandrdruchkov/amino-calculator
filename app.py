@@ -138,6 +138,70 @@ def shown_pct(pct):
     return int(f"{pct:.0f}")
 
 
+def limit_explanation(limiting_aa, aas_ratio, adjusted_ratio, total_protein):
+    """Пояснення простими словами, що саме обмежує лімітуюча амінокислота."""
+    if total_protein <= 0:
+        return ""
+    if aas_ratio >= 1.0:
+        return (
+            "No limiting amino acid: every essential amino acid meets the WHO pattern, "
+            "so the amino acid profile does not cap how much of this protein can be used. "
+            "The last column then shows only the surplus above the WHO proportions."
+        )
+    usable = total_protein * adjusted_ratio
+    dig_note = "" if abs(adjusted_ratio - aas_ratio) < 0.005 else " (digestibility included)"
+    return (
+        f"What the limit means: {limiting_aa} is at {aas_ratio * 100:.0f}% of the WHO "
+        f"pattern. WHO requirements are daily, so this matters only if {limiting_aa} is "
+        f"not topped up by other foods during the day: in that case about {usable:.1f} g "
+        f"of the {total_protein:.1f} g of protein can be used to build body "
+        f"protein{dig_note}, and the remaining {total_protein - usable:.1f} g is burned "
+        f"as energy."
+    )
+
+
+def burned_share(score_ratio, aas_ratio):
+    """Частка амінокислоти понад те, що дозволяє використати лімітуюча.
+
+    Модель «бочки Лібіха»: на побудову білка йде кожна амінокислота лише в
+    пропорції шаблону ВООЗ, помноженій на амінокислотний скор набору. Усе, що
+    вище, у цій спрощеній моделі вважається спаленим на енергію.
+    Повертає частку 0..1 від спожитої кількості цієї амінокислоти.
+    """
+    if not score_ratio or score_ratio <= 0:
+        return 0.0
+    return max(0.0, 1.0 - min(aas_ratio, 1.0) / score_ratio)
+
+
+def last_col_texts(aas_ratio):
+    """Заголовок і пояснення останньої колонки: є лімітуюча амінокислота чи ні."""
+    if aas_ratio < 1.0:
+        return (
+            "Burned as energy if not balanced, %",
+            "Burned as energy if not balanced",
+            "share of this amino acid that cannot be used for building protein and is "
+            "burned as energy if the limiting amino acid is not topped up by other foods "
+            "during the day (WHO requirements are daily; simplified model).",
+        )
+    return (
+        "Surplus above WHO pattern, %",
+        "Surplus above WHO pattern",
+        "share of this amino acid above the WHO proportions; there is no limiting amino "
+        "acid here, so nothing needs to be topped up (simplified model).",
+    )
+
+
+def limiting_label(limiting_aa, aas_ratio):
+    """Підпис лімітуючої амінокислоти для підсумку.
+
+    Якщо скор 100% і більше, лімітуючої немає: показуємо лише ту, що має
+    найнижчий показник.
+    """
+    if aas_ratio >= 1.0:
+        return f"none (lowest: {limiting_aa})"
+    return str(limiting_aa)
+
+
 def quality_status(aa, score_pct, limiting_aa, aas_ratio):
     """Якість: не залежить від розміру порції."""
     if aa == limiting_aa and aas_ratio < 1.0:
@@ -175,6 +239,14 @@ def build_print_html(
         for it in cart
     )
 
+    last_col_head, last_col_name, last_col_note = last_col_texts(aas_ratio)
+    _head_words = last_col_head.split(" ")
+    last_col_head_html = (
+        e(" ".join(_head_words[:3])) + "<br>" + e(" ".join(_head_words[3:]))
+        if aas_ratio < 1.0
+        else e(" ".join(_head_words[:2])) + "<br>" + e(" ".join(_head_words[2:]))
+    )
+
     aa_rows = ""
     for aa in WHO_REFERENCE:
         daily_mg = WHO_DAILY_REQ_PER_KG[aa] * weight_kg
@@ -190,7 +262,8 @@ def build_print_html(
             f"<td class='n'>{daily_mg:.0f}</td>"
             f"<td class='n'>{actual - daily_mg:+.0f}</td>"
             f"<td class='n s-{n_stat}'>{met:.0f}%</td>"
-            f"<td class='n s-{q_stat}'>{score:.0f}%</td></tr>"
+            f"<td class='n s-{q_stat}'>{score:.0f}%</td>"
+            f"<td class='n'>{burned_share(scores.get(aa, 0), aas_ratio) * 100:.0f}%</td></tr>"
         )
 
     total_grams = sum(it["grams"] for it in cart)
@@ -242,11 +315,12 @@ daily protein target {target_protein:.1f} g</div>
 
 <div class="sum">
   <div>Amino acid score<b>{aas_ratio * 100:.0f}%</b></div>
-  <div>Limiting AA<b>{e(limiting_aa)}</b></div>
+  <div>Limiting AA<b>{e(limiting_label(limiting_aa, aas_ratio))}</b></div>
   <div>Avg. digestibility<b>{weighted_dig * 100:.0f}%</b></div>
   <div>Digestibility-adjusted<b>{adjusted_ratio * 100:.0f}%</b></div>
   <div>Fat / Carbs / Fiber<b>{totals['fat']:.0f} / {totals['carbs']:.0f} / {totals['fiber']:.0f} g</b></div>
 </div>
+<div style="font-size:10px;margin:4px 0 2px 0">{e(limit_explanation(limiting_aa, aas_ratio, adjusted_ratio, totals['protein']))}</div>
 
 <h2>Essential amino acids</h2>
 <table>
@@ -257,6 +331,7 @@ daily protein target {target_protein:.1f} g</div>
     <th class='n'>Surplus / deficit<br>vs daily target, mg</th>
     <th class='n'>Quantity<br>% of daily target</th>
     <th class='n'>Quality<br>score vs WHO pattern</th>
+    <th class='n'>{last_col_head_html}</th>
   </tr>
   {aa_rows}
 </table>
@@ -268,6 +343,7 @@ daily protein target {target_protein:.1f} g</div>
   <b>Surplus / deficit</b> = intake minus the target for the whole day, not for one meal.
   <b>Quality</b> = amino acid per g of protein / WHO pattern; it does not depend on portion size.
   <b>Limiting</b> = the lowest quality score; it caps how much of the protein is fully used.
+  <b>{e(last_col_name)}</b> = {e(last_col_note)}
 </div>
 
 <div class="foot">Educational tool, not medical advice. Values come from open food
@@ -400,7 +476,12 @@ def build_pdf_bytes(
             "Daily target, mg",
             "Surplus/deficit\nvs daily target, mg",
             "Quantity,\n% of daily target",
-            "Quality, % pattern",
+            "Quality,\n% pattern",
+            (
+                "Burned as energy\nif not balanced, %"
+                if aas_ratio < 1.0
+                else "Surplus above\nWHO pattern, %"
+            ),
         ]
     ]
     row_colors, cell_colors = {}, {}
@@ -420,6 +501,7 @@ def build_pdf_bytes(
                 f"{actual - daily:+.0f}",
                 f"{met:.0f}%" if daily else "-",
                 f"{score:.0f}%",
+                f"{burned_share(scores.get(aa, 0), aas_ratio) * 100:.0f}%",
             ]
         )
         row_colors[i] = (None, q_stat == "lim")
@@ -439,7 +521,7 @@ def build_pdf_bytes(
         Spacer(1, 6),
         Paragraph(
             f"<b>Amino acid score:</b> {aas_ratio * 100:.0f}% &nbsp; "
-            f"<b>Limiting:</b> {t(limiting_aa)} &nbsp; "
+            f"<b>Limiting:</b> {t(limiting_label(limiting_aa, aas_ratio))} &nbsp; "
             f"<b>Avg. digestibility:</b> {weighted_dig * 100:.0f}% &nbsp; "
             f"<b>Digestibility-adjusted:</b> {adjusted_ratio * 100:.0f}%",
             small,
@@ -449,10 +531,16 @@ def build_pdf_bytes(
             f"{totals['fiber']:.0f} g",
             small,
         ),
+        Paragraph(
+            xml_escape(
+                t(limit_explanation(limiting_aa, aas_ratio, adjusted_ratio, totals["protein"]))
+            ),
+            small,
+        ),
         Paragraph("Essential amino acids", h2),
         make_table(
             aa_rows,
-            [30, 24, 30, 34, 36, 36],
+            [26, 21, 27, 31, 30, 26, 29],
             row_colors,
             cell_colors,
             text_left_cols=(0,),
@@ -470,7 +558,8 @@ def build_pdf_bytes(
             "with the portion. <b>Surplus/deficit</b> = intake minus the target for "
             "the whole day, not for one meal. <b>Quality</b> = amino acid per g of protein / WHO "
             "pattern; it does not depend on portion size. <b>Limiting</b> = the lowest "
-            "quality score; it caps how much of the protein is fully used.",
+            "quality score; it caps how much of the protein is fully used. "
+            f"<b>{last_col_texts(aas_ratio)[1]}</b> = {last_col_texts(aas_ratio)[2]}",
             small,
         ),
         Spacer(1, 8),
@@ -939,7 +1028,7 @@ if cart:
         st.metric(
             "Amino Acid Score",
             f"{aas_ratio * 100:.0f}%",
-            f"Limiting: {limiting_aa}",
+            f"Limiting: {limiting_label(limiting_aa, aas_ratio)}",
             delta_color="normal" if aas_ratio >= 1.0 else "inverse",
         )
 
@@ -1027,8 +1116,13 @@ if cart:
             <div style="background: rgba(239, 83, 80, 0.15); border-left: 4px solid #ef5350; padding: 12px 14px; border-radius: 6px; margin: 12px 0;">
                 <b style="color: #ef5350; font-size: 1.0rem;">Deficit in {limiting_aa} ({min_score * 100:.0f}% of the reference pattern)</b><br>
                 <span style="opacity: 0.9; font-size: 0.88rem;">
-                    In this simplified model, the limiting amino acid caps protein use at
-                    <b>{min_score * 100:.0f}%</b>; the rest is assumed to be used as energy.
+                    WHO requirements are daily, so this matters only if {limiting_aa} is not
+                    topped up by other foods during the day. In that case the limiting amino
+                    acid caps protein use at <b>{min_score * 100:.0f}%</b>: about
+                    <b>{total_protein * adjusted_ratio:.1f} g</b> of the
+                    {total_protein:.1f} g of protein can be used to build body protein;
+                    the remaining {total_protein * (1 - adjusted_ratio):.1f} g is burned
+                    as energy.
                 </span>
             </div>
             """,
@@ -1134,7 +1228,8 @@ if cart:
         st.info(
             "**Quantity** — how much of your daily target you got (depends on portion size).  \n"
             "**Quality** — amino acids per g of protein vs the WHO pattern (does not depend "
-            "on portion size). The lowest quality score is the **limiting** amino acid."
+            "on portion size). The lowest quality score is the **limiting** amino acid.  \n"
+            f"**{last_col_texts(aas_ratio)[1]}** — {last_col_texts(aas_ratio)[2]}"
         )
 
         QTY_DOT = {"low": "🟡", "ok": "🟢"}
@@ -1158,6 +1253,9 @@ if cart:
                     "Daily target (mg)": f"{daily_req_mg:.0f}",
                     "Quantity (% of daily target)": f"{QTY_DOT[n_stat]} {met_pct:.0f}%",
                     "Quality (score vs pattern)": f"{QUAL_DOT[q_stat]} {score_pct:.0f}%",
+                    last_col_texts(aas_ratio)[1]: (
+                        f"{burned_share(scores.get(aa, 0), aas_ratio) * 100:.0f}%"
+                    ),
                 }
             )
             chart_rows.append(
