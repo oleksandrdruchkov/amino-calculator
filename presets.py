@@ -43,6 +43,25 @@ PRESETS = {
             (7001052, 10,  "Butter"),
         ],
     },
+    "vegan_irish_breakfast": {
+        "title": "Vegan Irish breakfast (1 serving)",
+        "note": (
+            "All rows are quality grade A. Eggs are replaced by tofu (scramble), "
+            "butter is omitted. Vegan sausages are approximated by vegetarian "
+            "bratwurst (tofu and wheat protein, from BLS 4.0). Vegan pudding and "
+            "soda bread are not in the database, so pudding is left out and "
+            "wholemeal bread is used instead."
+        ),
+        "items": [
+            (6000290, 90,  "Vegan sausages (proxy)"),
+            (7000272, 120, "Tofu scramble"),
+            (7001808, 200, "Baked beans"),
+            (9000440, 100, "Hash browns"),
+            (9001225, 80,  "Tomato"),
+            (9001335, 60,  "Mushrooms"),
+            (7000672, 70,  "Wholemeal bread"),
+        ],
+    },
 
     "dal_rice": {
         "title": "Dal with rice (vegan)",
