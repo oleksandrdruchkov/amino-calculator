@@ -8,6 +8,8 @@ Energy content does not tell how much of a food's protein the body can actually 
 
 **Live app:** <https://aminocalc.streamlit.app>
 
+<p align="center"><img src="docs/screenshot.jpg" alt="AminoCalc: quantity and quality charts per amino acid" width="360"></p>
+
 ---
 
 ## What it calculates
