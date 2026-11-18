@@ -1525,7 +1525,7 @@ if cart:
 st.divider()
 st.caption(
     "Educational tool, not medical advice. Values come from open food composition"
-    " databases and may be incomplete or estimated."
+    " databases and may be incomplete or estimated. Built with Python and Streamlit."
 )
 st.markdown(
     "Suggestions and feedback: "
