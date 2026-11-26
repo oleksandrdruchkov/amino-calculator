@@ -143,4 +143,25 @@ PRESETS = {
              1, "Agar-agar"),
         ],
     },
+
+    "crepes_nutella": {
+        "title": "Crepes with Nutella (1 serving: 3 crepes + 40 g spread)",
+        "note": (
+            "Crepe batter per serving (batch of 4: 240 g flour, 500 ml milk, 2 eggs). "
+            "Nutella is not in the database, so it is decomposed by the EU label: "
+            "40 g = hazelnuts 13%, skimmed milk powder 8.7%, cocoa 7.4%. "
+            "Sugar (~21 g) and palm oil (~8 g) have no protein and are not in the "
+            "catalogue, so calories are understated by roughly 150 kcal; "
+            "amino acids are unaffected."
+        ),
+        "items": [
+            ("wheat flour white all-purpose enriched bleached -unenriched", 60, "Wheat flour"),
+            ("milk whole 3.25% milkfat with added vitamin d -dry", 125, "Whole milk"),
+            ("egg whole raw fresh", 25, "Egg (1/2)"),
+            ("butter salted -whipped", 5, "Butter (for frying)"),
+            ("hazelnuts filberts -blanched -dry -oil", 5, "Nutella: hazelnuts"),
+            ("milk dry nonfat regular without added vitamin", 3, "Nutella: skim milk powder"),
+            ("cocoa dry powder unsweetened -alkali", 3, "Nutella: cocoa"),
+        ],
+    },
 }
