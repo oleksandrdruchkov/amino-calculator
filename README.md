@@ -51,7 +51,7 @@ WHO requirements are expressed per day. A limiting amino acid in one meal is the
 ## Features
 
 - Search across all integrated databases or a single one, with a filter by data quality grade.
-- Nine sample meals (Irish breakfast in meat, vegetarian and vegan versions, dal with rice, tofu stir-fry, chili sin carne, hummus plate, shakshuka, vegan zefir) that can replace or extend the current plan, with a servings multiplier. Ingredients that are missing from the database are reported instead of being silently skipped.
+- Nine sample meals (Irish breakfast in meat, vegetarian and vegan versions, dal with rice, tofu stir-fry, chili sin carne, hummus plate, shakshuka, crepes with Nutella) that can replace or extend the current plan, with a servings multiplier. Ingredients that are missing from the database are reported instead of being silently skipped.
 - Per-food digestibility and portion editing.
 - Coverage-aware micronutrient tables: a nutrient with no laboratory value is shown as `no data`, and a total that covers only part of the plan is marked with `*`, so missing data is not read as a deficiency.
 - Charts of quality and quantity per amino acid, and a list of the remaining amino acids that have no WHO target.
