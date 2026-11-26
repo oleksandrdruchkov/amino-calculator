@@ -124,26 +124,6 @@ PRESETS = {
         ],
     },
 
-    "vegan_zefir": {
-        "title": "Vegan zefir, aquafaba + agar (1 serving = 3 pieces)",
-        "note": (
-            "Serving = about 1/4 of a batch (3 pieces). Values per 100 g are typed in "
-            "manually (USDA-style reference values; aquafaba is an approximation), not "
-            "taken from the database. It is almost all sugar (about 75 g per serving) "
-            "and has negligible protein, so the amino acid score is not meaningful here."
-        ),
-        "items": [
-            ({"calories": 387, "protein": 0.0, "fat": 0.0, "carbs": 100.0, "fiber": 0.0},
-             75, "Granulated sugar"),
-            ({"calories": 42, "protein": 0.2, "fat": 0.1, "carbs": 11.3, "fiber": 1.2},
-             38, "Apple puree, unsweetened"),
-            ({"calories": 5, "protein": 0.8, "fat": 0.0, "carbs": 0.6, "fiber": 0.0},
-             25, "Aquafaba (approx.)"),
-            ({"calories": 306, "protein": 6.2, "fat": 0.3, "carbs": 80.9, "fiber": 7.7},
-             1, "Agar-agar"),
-        ],
-    },
-
     "crepes_nutella": {
         "title": "Crepes with Nutella (1 serving: 3 crepes + 40 g spread)",
         "note": (
